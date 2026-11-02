@@ -1,5 +1,28 @@
 # 更新日志
 
+## v0.5.0
+
+本次把「模型工作台 / Magpie 引擎」在 Android 上真正跑通，并修复取模型列表失败的 DNS 问题。
+
+**新：内置 Android/arm64 Magpie 引擎（cgo 编译）**
+- 引擎（上游 magpie 6a900e0d，随 Our Free Model 2.8.0）现以 **cgo + Android NDK** 编译
+  （`CGO_ENABLED=1`、`aarch64-linux-android21-clang`），让 Go 的网络栈走 bionic 的
+  `getaddrinfo()` → netd，与系统 DNS 一致。
+- 修复「添加供应商 / 获取模型列表」报 `dial tcp: lookup … on [::1]:53: read udp …: connection refused`：
+  之前是 `CGO_ENABLED=0` 的纯 Go 解析器读不到 Android 的 DNS（没有 /etc/resolv.conf）。
+
+**修：模型工作台报「此管理操作需要已登录的本地管理会话」**
+- 上游把「模型工作台 / 引擎 / 供应商 / 订阅 / 路由」列为特权路由，只认一次性登录链接或
+  `managementKey`；用 `forwardKey`（客户端 API Key）登录只得到普通会话，于是这些页面 403。
+- 模块 `ofmctl` 新增 `mgmt-key` 子命令，`status` / `info` 会显示管理密钥；WebUI 控制台新增
+  「管理密钥」一行（打码、可复制），并说明：普通登录用 API Key，进入模型工作台/引擎等特权功能
+  必须用管理密钥登录控制台。
+
+**升级注意**
+- 引擎二进制变化会改变 `usr` 指纹，**请刷完整包**（增量包会因 `usr` 指纹不匹配被拒绝）；
+  数据目录 `/data/adb/ofm` 不受影响。
+- 一并包含此前累积的改进：局域网中继实际端口展示、日志轮转、启动参数引号健壮化、文档校正。
+
 ## v0.4.10-test
 
 > **测试版（预发布 / Alpha）**：本版用于验证「模型工作台 / Magpie 引擎」在 Android 上的**网络（DNS）修复**，属实验性构建。
