@@ -45,9 +45,15 @@
 ## 上游来源
 
 本模块不自己实现任何模型能力，只是把上游的现成服务搬到 Android 系统层运行。
-当前内置上游版本：**2.7.3**（以仓库根 `package.json` 为准；上游的
-`packages/standalone/package.json` 仍写作 2.7.1，服务启动时也自报 2.7.1，
-这是上游自身的版本号不一致，不影响功能）。
+当前内置上游版本：**2.8.0**（以仓库根 `package.json` 为准；上游的
+`packages/standalone/package.json` 版本号可能滞后，服务启动时的自报版本也可能与之不同，
+这属于上游自身的版本号不一致，不影响功能）。
+
+> **Magpie 模型引擎（Android/arm64）**：上游 2.8.0 只随包分发 win32 版 Magpie 引擎。
+> 本模块用与上游一致的参数交叉编译了 **android/arm64** 引擎（上游 magpie 钉子 `6a900e0d`），
+> 随模块运行时 `usr/` 分发（`/data/adb/ofm-runtime/usr/bin/magpie-android-arm64`），
+> 服务启动时由 `OFM_MAGPIE_BINARY` 指向它，因此在 Android 上也用上了 Magpie 引擎。
+> 引擎约 61 MB，故完整包体积较大；增量包仍只含 app（约 2 MB）。
 
 | 来源 | 地址 | 说明 |
 | --- | --- | --- |
@@ -217,7 +223,12 @@ su -c "sh $CTL info"       # 机器可读状态（WebUI 用）
 `.cache/` 不进版本库。首次构建需要自己准备一份 `usr/` 版运行时（含 `usr/bin/node`
 与 `usr/lib/*.so`），或用 `--usr` 直接给定；缺失时脚本会报错而不是拿宿主 Node 充数。
 
-上游版本由 `UPSTREAM_VERSION` 控制（默认 `2.7.3`），仓库地址由 `OFM_SOURCE_REPO` 覆盖。
+arm64 Magpie 引擎也放在 `.cache/`，由 `scripts/build-magpie-engine.mjs` 生成
+（需要 Go 1.26.8；CI 会自动准备）。它会产出两份东西：`.cache/magpie-android-arm64`
+（引擎二进制，构建时被注入 `usr/bin/`）与 `.cache/magpie-meta/`（`engine.json`/`LICENSE`/`NOTICE.md`，
+随 app 分发）。也可用 `OFM_MAGPIE_ENGINE` / `OFM_MAGPIE_META` 指向已有产物。缺失时构建会报错。
+
+上游版本由 `UPSTREAM_VERSION` 控制（默认 `2.8.0`），仓库地址由 `OFM_SOURCE_REPO` 覆盖。
 脚本会校验取到的 `package.json` 版本与期望值一致，不一致直接失败。
 
 构建前脚本会校验：

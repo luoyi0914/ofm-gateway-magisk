@@ -111,6 +111,14 @@ start() {
 
   cd "$APP_DIR" || return 1
 
+  # arm64 Magpie 引擎随 usr 分发（方案 A，不放进 app 以免被自更新覆盖）。
+  # 存在就通过 OFM_MAGPIE_BINARY 指向它（构建期补丁已把这个环境变量接进
+  # createMagpieEngine）；不存在则留空，引擎退回上游原有查找逻辑（通常不可用）。
+  OFM_MAGPIE_BINARY=
+  if [ -x "$RT_DIR/usr/bin/magpie-android-arm64" ]; then
+    OFM_MAGPIE_BINARY="$RT_DIR/usr/bin/magpie-android-arm64"
+  fi
+
   # 服务只在回环地址上监听；局域网是上游自己的中继（独立 Key），
   # 由 --lan / --no-lan 开关，并可从配置里指定端口。
   # 用位置参数逐个传递，逐项加引号，避免 DATA_DIR 等含空格时被再次分词。
@@ -129,7 +137,7 @@ start() {
   if ! mkfifo -m 0600 "$LOG_FIFO" 2>/dev/null; then
     # 无法建 FIFO（FIFO 文件系统不支持或目录权限）时退化为直接写日志，
     # 否则服务根本起不来
-    OFM_HOME="$DATA_DIR" HOME="$MODDIR" \
+    OFM_HOME="$DATA_DIR" HOME="$MODDIR" OFM_MAGPIE_BINARY="$OFM_MAGPIE_BINARY" \
       "$NODE" packages/standalone/cli.mjs "$@" >>"$LOG_FILE" 2>&1 &
     echo $! >"$PIDFILE"
     return 0
@@ -137,7 +145,7 @@ start() {
   ( stamp_lines <"$LOG_FIFO" >>"$LOG_FILE" ) &
   echo $! >"$LOG_PIDFILE"
 
-  OFM_HOME="$DATA_DIR" HOME="$MODDIR" \
+  OFM_HOME="$DATA_DIR" HOME="$MODDIR" OFM_MAGPIE_BINARY="$OFM_MAGPIE_BINARY" \
     "$NODE" packages/standalone/cli.mjs "$@" >"$LOG_FIFO" 2>&1 &
   echo $! >"$PIDFILE"
 }

@@ -1,5 +1,26 @@
 # 更新日志
 
+## v0.4.8
+
+> **Alpha Testing（预发布版）**：本版首次在 Android/arm64 上启用 Magpie 引擎，属实验性构建。
+> 发布以 pre-release 形式标记，暂不作为稳定版推荐；从 v0.4.7 及更早升级需刷完整包。欢迎小范围测试并反馈。
+
+**同步上游到 2.8.0，并让 Magpie 引擎在 Android/arm64 上可用（方案 A：引擎随 usr 分发）。**
+
+- **同步上游服务到 2.8.0**（`src/`、`packages/standalone`、`vendor/channel-pack` 均取自上游 v2.8.0）。
+- **新增：arm64 Magpie 引擎。** 上游 2.8.0 只随包分发 win32 版引擎，Android/arm64 上模型列表里的
+  Magpie 供应商一直不可用。本版用与上游一致的参数（`-tags nogui -trimpath -buildvcs=true
+  -ldflags "-s -w"`，上游 magpie 钉子 `6a900e0d`）交叉编译出 **android/arm64** 引擎，随模块运行时
+  `usr/` 分发（`usr/bin/magpie-android-arm64`），服务启动时通过环境变量 `OFM_MAGPIE_BINARY` 指向它。
+- **为什么引擎放 `usr/` 而不是 `app/`：** 引擎约 61 MB，远超 app 自更新机制的「单文件 4 MB / 128 文件」
+  限制，也远超 app 块 10 MB 的上限。放进 `usr/` 由模块安装器解到 `/data/adb/ofm-runtime/usr/bin/`，
+  且不受 app 自更新覆盖。**因此本版完整包体积一次性增大到约 61 MB**；增量包仍只含 app（约 2 MB）。
+- **升级提示：** 从 v0.4.7 及更早升级时，`usr` 指纹因加入引擎而改变，**请刷完整包**；此后的增量升级照常。
+- **构建链：** 新增 `scripts/build-magpie-engine.mjs`（编译引擎 + 生成 engine.json/LICENSE/NOTICE）
+  与 `scripts/magpie-binary-env.mjs`（构建期把 `OFM_MAGPIE_BINARY` 接进 `createMagpieEngine`）；
+  `scripts/build.sh` 在算 usr 指纹前注入引擎、给 app 带上引擎元数据；CI 增加 Go 环境步骤自动构建引擎。
+- 引擎带上完整的上游与 Go 依赖许可证（`vendor/magpie/{engine.json,LICENSE,NOTICE.md}`）。
+
 ## v0.4.7
 
 **修：局域网中继的实际端口现在能被正确看到；顺带做了一轮健壮性与文档校正。**

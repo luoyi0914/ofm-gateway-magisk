@@ -2,20 +2,20 @@
 # 组装运行时并打出可刷入的模块包。
 #
 # 用法：
-#   ./scripts/build.sh                 完整包：组装 app + 带 usr 运行时（约 36 MB）
+#   ./scripts/build.sh                 完整包：组装 app + 带 usr 运行时（含 arm64 引擎，约 61 MB）
 #   ./scripts/build.sh --patch         增量包：只带 app（约 2 MB），复用设备上的 usr
 #   ./scripts/build.sh --usr <src>     指定 usr 来源（usr 目录，或含 usr/ 的 tgz）
 #   ./scripts/build.sh --app <dir>     复用已组装好的 app 目录，跳过上游拉取（离线构建）
-#   ./scripts/build.sh --upstream <v>  指定上游服务版本（默认 2.7.3）
+#   ./scripts/build.sh --upstream <v>  指定上游服务版本（默认 2.8.0）
 #
 # 运行时 = Node（含 Android 依赖库） + 上游独立服务源码。
 # 仓库不存二进制：Node 侧放 .cache/，服务代码现场从上游取，都不进版本库。
 #
 # 为什么分两种包：
-#   usr/ 是 Node 与它的 Android 依赖库，解压后 90 MB，压成 33 MB，几乎不随版本变化；
-#   app/ 是上游服务代码，2.7.x 解压后约 8 MB，压成约 2 MB，每次升级变的正是它。
+#   usr/ 是 Node 与它的 Android 依赖库及 arm64 Magpie 引擎，解压后约 150 MB，压成约 57 MB；
+#   app/ 是上游服务代码，解压后约 8 MB，压成约 2 MB，每次升级变的正是它。
 #   完整包两块都带；增量包只带 app，安装时核对设备上 usr 的指纹后原地复用。
-#   于是日常升级的下载量从 36 MB 降到约 2 MB。
+#   于是日常升级的下载量从约 61 MB 降到约 2 MB。
 #
 # 上游 2.6 起仓库里多了约 100 MB 的平台二进制（Windows 工作台引擎 + 分片），
 # Android 用不上：拉源码用 partial clone + sparse，组装时也不带进 app/。
@@ -25,13 +25,19 @@ set -e
 ROOT=$(cd "${0%/*}/.." && pwd)
 VERSION=$(sed -n 's/^version=//p' "$ROOT/module/module.prop")
 VCODE=$(sed -n 's/^versionCode=//p' "$ROOT/module/module.prop")
-UPSTREAM_VERSION=${UPSTREAM_VERSION:-2.7.3}
+UPSTREAM_VERSION=${UPSTREAM_VERSION:-2.8.0}
 REPO_URL=${OFM_SOURCE_REPO:-https://github.com/Ebony-Vinyl/dsh-our-free-model.git}
 # 构建目录放到系统临时区：proot 下在工作区内跑 git clone / tar 容易被静默限制
 WORK=${OFM_BUILD_DIR:-${TMPDIR:-/tmp}/ofm-build}
 # 基础运行时缓存不能放进 $WORK：脚本开头会整目录重建
 CACHE="$ROOT/.cache"
 DIST="$ROOT/dist"
+
+# arm64 Magpie 引擎（方案 A）：二进制随 usr 分发（app 自更新只认单文件 4MB，
+# 肯定放不下 61MB 的引擎），元数据（engine.json/LICENSE/NOTICE）随 app 分发。
+# 两者都由 scripts/build-magpie-engine.mjs 生成到 .cache/，可用环境变量覆盖。
+ENGINE_BIN=${OFM_MAGPIE_ENGINE:-$CACHE/magpie-android-arm64}
+ENGINE_META=${OFM_MAGPIE_META:-$CACHE/magpie-meta}
 
 # ---------------- 参数 ----------------
 
@@ -118,6 +124,34 @@ materialize_usr() {
     return 1
   fi
   [ -x "$_dst/usr/bin/node" ] || { echo "usr 运行时里没有可执行的 usr/bin/node" >&2; return 1; }
+}
+
+# 把 arm64 引擎二进制塞进 usr/bin/（必须在算 usr_rev 与打 usr.tgz 之前调用，
+# 这样指纹与包内容都含引擎；用户从旧包升级时指纹不符会被提示改刷完整包，安全）
+inject_engine() {
+  _usr_dir=$1
+  if [ ! -f "$ENGINE_BIN" ]; then
+    echo "缺少 arm64 Magpie 引擎：$ENGINE_BIN" >&2
+    echo "先在能编译的机器上运行 node scripts/build-magpie-engine.mjs（或设 OFM_MAGPIE_ENGINE 指向已有二进制）" >&2
+    return 1
+  fi
+  mkdir -p "$_usr_dir/usr/bin"
+  cp -f "$ENGINE_BIN" "$_usr_dir/usr/bin/magpie-android-arm64"
+  chmod 0755 "$_usr_dir/usr/bin/magpie-android-arm64"
+}
+
+# 引擎元数据随 app 分发：让状态面板能显示引擎版本/来源，并满足升级器的运行时资产清单
+install_engine_meta() {
+  if [ ! -f "$ENGINE_META/engine.json" ]; then
+    echo "缺少引擎元数据：$ENGINE_META/engine.json" >&2
+    echo "先运行 node scripts/build-magpie-engine.mjs（或设 OFM_MAGPIE_META）" >&2
+    return 1
+  fi
+  mkdir -p "$APP_DIR/vendor/magpie"
+  cp -f "$ENGINE_META/engine.json" "$APP_DIR/vendor/magpie/engine.json"
+  if [ -f "$ENGINE_META/LICENSE" ]; then cp -f "$ENGINE_META/LICENSE" "$APP_DIR/vendor/magpie/LICENSE"; fi
+  if [ -f "$ENGINE_META/NOTICE.md" ]; then cp -f "$ENGINE_META/NOTICE.md" "$APP_DIR/vendor/magpie/NOTICE.md"; fi
+  return 0
 }
 
 # ---------------- app：上游服务代码 ----------------
@@ -208,6 +242,12 @@ for _d in packages/standalone/cli.mjs packages/standalone/service.mjs vendor/cha
   [ -e "$APP_DIR/$_d" ] || { echo "app 组装不完整：缺少 $_d" >&2; exit 1; }
 done
 
+# 引擎元数据（engine.json/LICENSE/NOTICE）随 app 分发。--app 复用的 app 目录
+# 若来自完整构建，已自带这些文件，无需重复安装。
+if [ -z "$APP_SRC" ]; then
+  install_engine_meta || exit 1
+fi
+
 # OpenAI 兼容修补：chat/completions 入口只认 system/user/assistant/tool，
 # 收到 role:"developer" 直接 400。新版客户端（DSH 的 pi-ai）对自定义 baseURL
 # 会把握手用的系统提示发成 developer，于是第一个请求就被拒 —— 表现为
@@ -217,8 +257,11 @@ done
 if _node=$(command -v node 2>/dev/null); then
   "$_node" "$ROOT/scripts/openai-developer-compat.mjs" "$APP_DIR" ||
     { echo "OpenAI 兼容修补失败（上游结构可能变了）" >&2; exit 1; }
+  # 把 OFM_MAGPIE_BINARY 接进 createMagpieEngine，让服务用 usr 里的 arm64 引擎
+  "$_node" "$ROOT/scripts/magpie-binary-env.mjs" "$APP_DIR" ||
+    { echo "Magpie 引擎环境变量补丁失败（上游结构可能变了）" >&2; exit 1; }
 else
-  echo "没有 node，无法做 OpenAI 兼容修补" >&2; exit 1
+  echo "没有 node，无法做运行期补丁" >&2; exit 1
 fi
 
 # 把 service.mjs 的 import 图整个走一遍：漏文件在这里就炸，
@@ -253,6 +296,7 @@ fi
 
 if [ "$MODE" = full ]; then
   materialize_usr "$USR_SRC" "$WORK/usr-src" || exit 1
+  inject_engine "$WORK/usr-src" || exit 1
   USR_REV=$(usr_rev "$WORK/usr-src/usr")
   tar -czf "$WORK/module/runtime/usr.tgz" -C "$WORK/usr-src" usr
 elif [ -n "$OFM_USR_REV" ]; then
@@ -260,6 +304,7 @@ elif [ -n "$OFM_USR_REV" ]; then
   USR_REV=$OFM_USR_REV
 else
   materialize_usr "$USR_SRC" "$WORK/usr-src" || exit 1
+  inject_engine "$WORK/usr-src" || exit 1
   USR_REV=$(usr_rev "$WORK/usr-src/usr")
 fi
 

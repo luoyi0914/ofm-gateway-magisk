@@ -3,9 +3,9 @@ name: Build & Release
 # 推 tag 即自动构建并发版；也可在 Actions 页面手动指定一个已有 tag 重跑。
 #
 # 每次发版产出两个附件：
-#   完整包 OFM_Gateway_Magisk_v<ver>.zip        约 35 MB，含 usr（Node 运行时）+ app
+#   完整包 OFM_Gateway_Magisk_v<ver>.zip        约 61 MB，含 usr（Node 运行时 + arm64 Magpie 引擎）+ app
 #   增量包 OFM_Gateway_Magisk_v<ver>_patch.zip  约  2 MB，只含 app
-# 日常升级刷增量包即可；只有换 Node 运行时才需要完整包。
+# 日常升级刷增量包即可；只有换 Node 运行时 / 换包结构（如首次加入引擎）才需要完整包。
 #
 # usr 那 35 MB 不进仓库，也不在手机上上传：从基线 Release 的 zip 里取现成的 usr.tgz，
 # 服务代码按 UPSTREAM_VERSION 从上游源码现场组装。成品在 runner 本地生成，
@@ -74,6 +74,20 @@ jobs:
           [ "$PROP_VER" = "$JSON_VER" ] || { echo "module.prop 与 update.json 的 version 不一致" >&2; exit 1; }
           [ "$PROP_CODE" = "$JSON_CODE" ] || { echo "module.prop 与 update.json 的 versionCode 不一致" >&2; exit 1; }
 
+      - name: 准备 Go 环境（用于构建 arm64 Magpie 引擎）
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.8'
+          cache: false
+
+      - name: 构建 arm64 Magpie 引擎与元数据
+        run: |
+          # 产出 .cache/magpie-android-arm64 与 .cache/magpie-meta/*
+          # 版本参数与上游 2.8.0 的 magpie 钉子一致（6a900e0d），build.sh 会把它注入 usr/
+          node scripts/build-magpie-engine.mjs
+          ls -lh .cache/magpie-android-arm64
+          ls -lh .cache/magpie-meta
+
       - name: 从基线 Release 取 Node 运行时
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -140,8 +154,8 @@ jobs:
             echo
             echo '| 文件 | 大小 | 什么时候下 |'
             echo '| --- | --- | --- |'
-            echo '| `OFM_Gateway_Magisk_v'"$VERSION"'.zip` | 约 35 MB | 第一次装，或从很老的版本升级 |'
-            echo '| `OFM_Gateway_Magisk_v'"$VERSION"'_patch.zip` | 约 2 MB | 已经装过 0.4.2 及以上，日常升级用这个 |'
+            echo '| `OFM_Gateway_Magisk_v'"$VERSION"'.zip` | 约 61 MB | 第一次装，或从很老的版本升级，或本次换了包结构（如新增引擎） |'
+            echo '| `OFM_Gateway_Magisk_v'"$VERSION"'_patch.zip` | 约 2 MB | 已经装过同一 usr 结构的版本，日常升级用这个 |'
             echo
             echo '增量包只含服务代码，安装时会核对设备上已有的 Node 运行时；'
             echo '对不上会直接报错让你改刷完整包，不会装出半套。'
@@ -159,14 +173,22 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.meta.outputs.tag }}
         run: |
+          # 若更新日志标注了 Alpha Testing / 预发布，则把 Release 标记为 pre-release
+          TITLE="$TAG"
+          PRERELEASE=""
+          if grep -qiE 'alpha testing|测试版|预发布' /tmp/release-body.md; then
+            PRERELEASE="--prerelease"
+            TITLE="$TAG (Alpha Testing)"
+            echo "检测到测试标记，本次发布标为 pre-release"
+          fi
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $TAG 已存在，更新正文"
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --title "$TAG" --notes-file /tmp/release-body.md
+              --title "$TITLE" --notes-file /tmp/release-body.md $PRERELEASE
           else
             echo "创建 Release $TAG"
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --title "$TAG" --notes-file /tmp/release-body.md
+              --title "$TITLE" --notes-file /tmp/release-body.md $PRERELEASE
           fi
           # 同名附件用 --clobber 覆盖：手动重跑工作流时不会因已存在而失败
           gh release upload "$TAG" "$OFM_ZIP" "$OFM_PATCH" --repo "$GITHUB_REPOSITORY" --clobber
