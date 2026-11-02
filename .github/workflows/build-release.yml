@@ -80,10 +80,20 @@ jobs:
           go-version: '1.26.8'
           cache: false
 
+      - name: 准备 Android NDK（cgo 构建引擎，修复 Android DNS）
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27c
+          add-to-path: false
+
       - name: 构建 arm64 Magpie 引擎与元数据
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           # 产出 .cache/magpie-android-arm64 与 .cache/magpie-meta/*
           # 版本参数与上游 2.8.0 的 magpie 钉子一致（6a900e0d），build.sh 会把它注入 usr/
+          # android/arm64 默认用 cgo + NDK clang 构建，让 DNS 走 bionic → netd（修复 Android 上 [::1]:53 失败）
           node scripts/build-magpie-engine.mjs
           ls -lh .cache/magpie-android-arm64
           ls -lh .cache/magpie-meta

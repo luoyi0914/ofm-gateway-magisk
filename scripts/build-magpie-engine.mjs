@@ -22,7 +22,15 @@
  *   node scripts/build-magpie-engine.mjs [--goos android] [--goarch arm64]
  *        [--revision 6a900e0d048e592cbc9120dd2c3f515aab9ef04a]
  *        [--out .cache/magpie-android-arm64] [--meta .cache/magpie-meta]
- *        [--work .cache/magpie-build] [--go go]
+ *        [--work .cache/magpie-build] [--go go] [--cc <clang>] [--cgo 0|1]
+ *
+ * cgo / DNS：
+ *   Android 的系统 DNS 由 netd 统一管理，没有标准的 /etc/resolv.conf。Go 的纯解析器
+ *   （CGO_ENABLED=0 时默认）读不到 nameserver，会退回 127.0.0.1:53/[::1]:53，导致引擎
+ *   发出的请求报 `dial tcp: lookup … on [::1]:53: connection refused`。因此 android/arm64
+ *   必须用 cgo 构建：CGO_ENABLED=1 + Android NDK 的 aarch64 clang，让 net 走 bionic 的
+ *   getaddrinfo → netd，和系统一致。非 android 目标默认仍 CGO_ENABLED=0。
+ *   cgo 需 --cc 指定 NDK clang，或设置 ANDROID_NDK_HOME 由脚本推导。
  *
  * 产物：
  *   <out>              arm64 ELF 引擎二进制（chmod 0755）
@@ -48,6 +56,8 @@ function parseArgs(argv) {
     meta: path.join(ROOT, '.cache', 'magpie-meta'),
     work: path.join(ROOT, '.cache', 'magpie-build'),
     go: process.env.GO || 'go',
+    cc: process.env.CC || '',
+    cgo: null, // null = 自动（android 目标开启，其余关闭）
   }
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i]
@@ -58,6 +68,9 @@ function parseArgs(argv) {
     else if (a === '--meta') opts.meta = path.resolve(argv[++i])
     else if (a === '--work') opts.work = path.resolve(argv[++i])
     else if (a === '--go') opts.go = argv[++i]
+    else if (a === '--cc') opts.cc = argv[++i]
+    else if (a === '--cgo') opts.cgo = !['0', 'false', 'no', 'off'].includes(String(argv[++i]).toLowerCase())
+    else if (a === '--no-cgo') opts.cgo = false
     else if (a === '-h' || a === '--help') { console.log('见脚本头部注释'); process.exit(0) }
     else { console.error(`未知参数：${a}`); process.exit(2) }
   }
@@ -67,17 +80,34 @@ function parseArgs(argv) {
 const opts = parseArgs(process.argv.slice(2))
 const version = `ofm-${opts.revision.slice(0, 12)}`
 const source = path.join(opts.work, 'magpie-build')
+
+// 解析 cgo 与 Android C 工具链
+const wantCgo = opts.cgo === null ? opts.goos === 'android' : opts.cgo
+function deriveAndroidCC(ndkHome, goarch) {
+  const archMap = { arm64: 'aarch64', amd64: 'x86_64', '386': 'i686', arm: 'armv7a' }
+  const triple = archMap[goarch]
+  if (!triple) throw new Error(`不支持的 android 架构：${goarch}`)
+  const host = process.platform === 'darwin' ? 'darwin-x86_64' : 'linux-x86_64'
+  return path.join(ndkHome, 'toolchains', 'llvm', 'prebuilt', host, 'bin', `${triple}-linux-android21-clang`)
+}
+let cc = opts.cc
+const ndkHome = process.env.ANDROID_NDK_HOME || process.env.ANDROID_NDK_ROOT || process.env.ANDROID_NDK_LATEST_HOME || ''
+if (wantCgo && !cc && ndkHome) cc = deriveAndroidCC(ndkHome, opts.goarch)
+if (wantCgo && !cc) {
+  throw new Error('cgo 构建需要 --cc 指定 Android NDK 的 clang，或设置 ANDROID_NDK_HOME')
+}
 const env = {
   ...process.env,
   GOOS: opts.goos,
   GOARCH: opts.goarch,
   GOARM64: opts.goarch === 'arm64' ? 'v8.0' : (process.env.GOARM64 || ''),
-  CGO_ENABLED: '0',
+  CGO_ENABLED: wantCgo ? '1' : '0',
   GOFLAGS: '',
   GOCACHE: path.join(opts.work, 'go-cache'),
   GOMODCACHE: path.join(opts.work, 'go-mod'),
   GOWORK: 'off',
 }
+if (wantCgo) env.CC = cc
 
 function run(command, args, cwd = source, capture = true) {
   return new Promise((resolve, reject) => {
@@ -189,7 +219,13 @@ async function main() {
   await writeFile(path.join(opts.meta, 'NOTICE.md'), notices.join('\n'))
   const metadata = {
     schemaVersion: 1, name: 'magpie', upstream: UPSTREAM, revision: opts.revision, version, license: 'MIT',
-    build: { command: [opts.go, 'build', ...flags, '.'], go: await run(opts.go, ['version']) },
+    build: {
+      command: [opts.go, 'build', ...flags, '.'],
+      go: await run(opts.go, ['version']),
+      cgo: wantCgo,
+      cc: wantCgo ? cc : null,
+      env: wantCgo ? { CGO_ENABLED: '1', CC: path.basename(cc) } : { CGO_ENABLED: '0' },
+    },
     binaries: {}, // 引擎二进制随 usr 分发，由 OFM_MAGPIE_BINARY 指向
     modules,
   }

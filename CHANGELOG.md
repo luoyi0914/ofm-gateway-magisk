@@ -1,5 +1,22 @@
 # 更新日志
 
+## v0.4.10-test
+
+> **测试版（预发布 / Alpha）**：本版用于验证「模型工作台 / Magpie 引擎」在 Android 上的**网络（DNS）修复**，属实验性构建。
+> 以 GitHub pre-release 形式发布，暂不作为稳定版推送；欢迎小范围测试并反馈。
+
+**修：模型工作台「获取模型 / 添加供应商」报 DNS 失败**（`dial tcp: lookup xxx on [::1]:53: read udp ...: connection refused`）。
+
+- **根因：** Magpie 引擎是用 Go 静态方式（`CGO_ENABLED=0`）交叉编译的，走 Go 自带的纯 Go DNS 解析器。
+  而 Android 的 DNS 由 `netd` 统一管理、没有标准的 `/etc/resolv.conf`，纯解析器读不到 nameserver，
+  只能回退到 `127.0.0.1:53`/`[::1]:53`，于是所有对外请求（拉取 `/v1/models` 等）都在解析阶段被拒。
+  这与登录/权限无关，是引擎二进制的编译方式问题。
+- **修法（模块侧，不改上游源码）：** 改用 **cgo + Android NDK（aarch64-linux-android21-clang）** 编译
+  `CGO_ENABLED=1` 的 Android/arm64 引擎，让 Go 走 bionic 的 `getaddrinfo()` → `netd`，与系统 DNS 行为一致。
+  `scripts/build-magpie-engine.mjs` 现支持 `--cc/--cgo`，android 目标默认用 cgo。
+- **升级注意：** 引擎二进制变化会改变 `usr` 指纹，**本版必须刷完整包**（增量包会因 `usr` 指纹不匹配而被拒绝），
+  数据目录 `/data/adb/ofm` 不受影响。
+
 ## v0.4.9-test
 
 > **测试版（预发布 / Alpha）**：本版用于验证「模型工作台 / Magpie 引擎」的特权登录修复，属实验性构建。
