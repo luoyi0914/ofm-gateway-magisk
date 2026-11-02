@@ -179,10 +179,13 @@
   <div class="row"><span class="k">目录同步</span><span class="v" id="cSynced">—</span></div>
   <div class="row"><span class="k">控制台</span><span class="v mono" id="cUrl" style="cursor:pointer">—</span></div>
   <div class="row"><span class="k">登录 Key</span><span class="v mono" id="cKey" style="cursor:pointer">—</span></div>
+  <div class="row"><span class="k">管理密钥</span><span class="v mono" id="cMgmt" style="cursor:pointer">—</span></div>
   <div class="hint">
-    点地址或 Key 即可复制。在浏览器打开地址后，把 Key 粘进登录框即可进入完整控制台
-    （渠道登录、用量看板、Key 轮换）。该页带 <code>frame-ancestors 'none'</code>
-    与 HttpOnly 会话，无法在本页内嵌。
+    点地址或密钥即可复制。<br>
+    · <b>登录 Key（= API Key）</b>：给推理客户端用；拿它登录控制台只能看普通页面。<br>
+    · <b>管理密钥</b>：进入「模型工作台 / Magpie 引擎 / 供应商 / 订阅 / 路由」等特权功能，
+    必须用<b>管理密钥</b>登录控制台（在登录框粘贴管理密钥，别用上面的 API Key）。<br>
+    该控制台带 <code>frame-ancestors 'none'</code> 与 HttpOnly 会话，无法在本页内嵌。
   </div>
 </div>
 
@@ -295,6 +298,7 @@
     document.getElementById("lanAddr").textContent = lanLine(info);
     // 控制台卡里的地址与 Key 跟着状态一起更新，不依赖 loadConsole 的先后
     document.getElementById("cKey").textContent = info.key || "（未就绪）";
+    document.getElementById("cMgmt").textContent = maskKey(info.mgmt_key) || "（尚未生成）";
     if (info.port) {
       consoleUrl = "http://127.0.0.1:" + info.port + "/";
       document.getElementById("cUrl").textContent = consoleUrl;
@@ -311,10 +315,16 @@
     document.getElementById("autostart").checked = info.autostart === "1";
   }
 
+  // 管理密钥只展示打码形式，点按复制完整值
+  function maskKey(s) {
+    if (!s) return "";
+    if (s.length <= 10) return s.replace(/.(?=.{2})/g, "•");
+    return s.slice(0, 4) + "…" + s.slice(-4);
+  }
+
   // 中继端口的落盘值只是「请求值」：LAN_PORT=0（自动分配）时停在 0，
   // 实际端口由服务运行期决定，ofmctl 会从启动日志里取到 lan_actual_port。
-  function lanLine(info) {
-    if (info.lan !== "1") return "未开启";
+  function lanLine(info) {    if (info.lan !== "1") return "未开启";
     var p = info.lan_actual_port || info.lan_port;
     if (!p || p === "0") return "已开启，端口待服务分配";
     return "端口 " + p + "，Key " + (info.lan_key || "（尚未生成）");
@@ -492,6 +502,13 @@
       return;
     }
     copyText(current.key, "登录 Key 已复制");
+  };
+  document.getElementById("cMgmt").onclick = function () {
+    if (!current.mgmt_key) {
+      toast("尚未生成管理密钥", true);
+      return;
+    }
+    copyText(current.mgmt_key, "管理密钥已复制：用它登录控制台才能打开模型工作台");
   };
 
   document.getElementById("key").onclick = function () {

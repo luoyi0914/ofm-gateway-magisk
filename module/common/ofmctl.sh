@@ -64,6 +64,14 @@ key_of() {
   sed -n 's/.*"forwardKey": *"\([^"]*\)".*/\1/p' "$DATA_DIR/settings.json" 2>/dev/null | head -n 1
 }
 
+# 本机管理密钥（managementKey）。与 forwardKey（API Key）不同：
+# 上游把「模型工作台 / Magpie 引擎 / 供应商 / 订阅 / 路由」等特权路由要求用
+# managementKey（或启动时的一次性登录链接）登录控制台，仅用 forwardKey 登录
+# 只是普通会话，访问特权页会 403。暴露它，方便用户在控制台里完成特权登录。
+mgmt_key() {
+  sed -n 's/.*"managementKey": *"\([^"]*\)".*/\1/p' "$DATA_DIR/settings.json" 2>/dev/null | head -n 1
+}
+
 lan_key_of() {
   sed -n 's/.*"standaloneLanKey": *"\([^"]*\)".*/\1/p' "$DATA_DIR/settings.json" 2>/dev/null | head -n 1
 }
@@ -185,6 +193,7 @@ case "$1" in
       echo "运行中 (pid $(cat "$PIDFILE"))"
       echo "地址：http://127.0.0.1:$PORT_NOW/v1"
       echo "密钥：$(key_of)"
+      echo "管理密钥：$(mgmt_key)（进入模型工作台/引擎等特权功能，需用它登录控制台）"
       if [ "$LAN" = "1" ]; then
         _lp=$(lan_port_of)
         # LAN_PORT=0（自动分配）时落盘的是 0，改用启动日志里的实际端口
@@ -216,6 +225,7 @@ case "$1" in
     echo "port=$PORT_NOW"
     echo "host=127.0.0.1"
     echo "key=$(key_of)"
+    echo "mgmt_key=$(mgmt_key)"
     echo "lan=$LAN"
     _lan_req=$(lan_port_of)
     echo "lan_port=$_lan_req"
@@ -289,5 +299,11 @@ case "$1" in
     [ -n "$_sum" ] || { echo "读取控制台数据失败" >&2; exit 1; }
     printf '%s\n' "$_sum"
     ;;
-  *) echo "用法：$0 start|stop|restart|status|info|set-config|log|console" >&2; exit 1 ;;
+  # 打印本机管理密钥，供在控制台完成「特权登录」（模型工作台/引擎需要）
+  mgmt-key)
+    _k=$(mgmt_key)
+    [ -n "$_k" ] || { echo "尚未生成管理密钥（先启动一次服务再试）" >&2; exit 1; }
+    printf '%s\n' "$_k"
+    ;;
+  *) echo "用法：$0 start|stop|restart|status|info|set-config|log|console|mgmt-key" >&2; exit 1 ;;
 esac

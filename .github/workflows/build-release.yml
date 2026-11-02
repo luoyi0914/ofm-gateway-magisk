@@ -126,7 +126,7 @@ jobs:
           # OFM_USR 由上一步写进 $GITHUB_ENV，这里直接读；
           # 不能用 ${{ env.xxx }} 引用它——那种写法在解析阶段就取值了，那时还是空的
           sh scripts/build.sh --usr "$OFM_USR"
-          echo "OFM_ZIP=$(ls dist/OFM_Gateway_Magisk_v*[0-9].zip)" >> "$GITHUB_ENV"
+          echo "OFM_ZIP=$(ls dist/OFM_Gateway_Magisk_v*.zip | grep -v '_patch\.zip$')" >> "$GITHUB_ENV"
           # build.sh 每次都会重建构建目录，增量包要复用这一步组装的 app，先挪出去
           cp -a "$OFM_BUILD_DIR/app" /tmp/app-stage
           ls -lh dist/

@@ -1,7 +1,7 @@
 id=ofm_gateway
 name=OFM 本机网关（独立运行）
-version=0.4.8
-versionCode=19
+version=0.4.9-test
+versionCode=20
 author=玖清雨
 description=无需安装 OFM App：开机以 root 身份常驻运行 Our Free Model 本机网关（自带 Node 运行时，默认端口 15656）。点本模块的动作按钮可查看地址与 API Key，并能启停或重启服务。作者酷安主页：https://www.coolapk.com/u/3214953
 updateJson=https://raw.githubusercontent.com/luoyi0914/ofm-gateway-magisk/main/update.json
