@@ -74,6 +74,17 @@ lan_port_of() {
   sed -n 's/.*"standaloneLanPort": *\([0-9][0-9]*\).*/\1/p' "$DATA_DIR/settings.json" 2>/dev/null | head -n 1
 }
 
+# 中继「实际」监听的端口。settings.json 里的 standaloneLanPort 只是请求值：
+# LAN_PORT=0（自动分配）时它停在 0，真实端口只出现在服务启动日志的
+# 「LAN API：http://<ip>:<port>/v1」一行里。这里取最近一次出现的端口，
+# 取不到就返回空（调用方自行回退）。只扫日志尾部，避免 ofm.log 很长时拖慢 status/info。
+lan_actual_port() {
+  [ -f "$LOG_FILE" ] || return 0
+  tail -n 3000 "$LOG_FILE" 2>/dev/null \
+    | grep -a 'LAN API' | tail -n 1 \
+    | sed -n 's#.*:\([0-9][0-9]*\)/v1.*#\1#p'
+}
+
 # 写配置。值由调用方校验过，这里只做整行替换，绝不拼接进 shell
 save_config() {
   _key=$1
@@ -88,17 +99,28 @@ start() {
   OFM_MODDIR="$MODDIR" sh "$MODDIR/common/runtime.sh" now || return 1
   clear_stale_lock
   rm -f "$PIDFILE"
+
+  # 日志只追加不轮转，长期运行会无限增长。启动前若已超过 4 MB，
+  # 只保留最近 2 MB，避免占满数据分区（单次运行期间仍可能继续增长）。
+  if [ -f "$LOG_FILE" ]; then
+    _sz=$(wc -c <"$LOG_FILE" 2>/dev/null || echo 0)
+    if [ "${_sz:-0}" -gt 4194304 ]; then
+      tail -c 2097152 "$LOG_FILE" >"$LOG_FILE.tmp" 2>/dev/null && mv -f "$LOG_FILE.tmp" "$LOG_FILE"
+    fi
+  fi
+
   cd "$APP_DIR" || return 1
 
   # 服务只在回环地址上监听；局域网是上游自己的中继（独立 Key），
-  # 由 --lan / --no-lan 开关，并可从配置里指定端口
-  _args="--data-dir $DATA_DIR"
-  [ "$PORT" = "0" ] || _args="--port $PORT $_args"
+  # 由 --lan / --no-lan 开关，并可从配置里指定端口。
+  # 用位置参数逐个传递，逐项加引号，避免 DATA_DIR 等含空格时被再次分词。
+  set -- --data-dir "$DATA_DIR"
+  [ "$PORT" = "0" ] || set -- --port "$PORT" "$@"
   if [ "$LAN" = "1" ]; then
-    _args="$_args --lan"
-    [ "$LAN_PORT" = "0" ] || _args="$_args --lan-port $LAN_PORT"
+    set -- "$@" --lan
+    [ "$LAN_PORT" = "0" ] || set -- "$@" --lan-port "$LAN_PORT"
   else
-    _args="$_args --no-lan"
+    set -- "$@" --no-lan
   fi
 
   # 服务输出先进 FIFO，由 stamp_lines 加时间戳再落盘。
@@ -108,7 +130,7 @@ start() {
     # 无法建 FIFO（FIFO 文件系统不支持或目录权限）时退化为直接写日志，
     # 否则服务根本起不来
     OFM_HOME="$DATA_DIR" HOME="$MODDIR" \
-      "$NODE" packages/standalone/cli.mjs $_args >>"$LOG_FILE" 2>&1 &
+      "$NODE" packages/standalone/cli.mjs "$@" >>"$LOG_FILE" 2>&1 &
     echo $! >"$PIDFILE"
     return 0
   fi
@@ -116,7 +138,7 @@ start() {
   echo $! >"$LOG_PIDFILE"
 
   OFM_HOME="$DATA_DIR" HOME="$MODDIR" \
-    "$NODE" packages/standalone/cli.mjs $_args >"$LOG_FIFO" 2>&1 &
+    "$NODE" packages/standalone/cli.mjs "$@" >"$LOG_FIFO" 2>&1 &
   echo $! >"$PIDFILE"
 }
 
@@ -156,7 +178,12 @@ case "$1" in
       echo "地址：http://127.0.0.1:$PORT_NOW/v1"
       echo "密钥：$(key_of)"
       if [ "$LAN" = "1" ]; then
-        echo "局域网：端口 $(lan_port_of)，Key $(lan_key_of)"
+        _lp=$(lan_port_of)
+        # LAN_PORT=0（自动分配）时落盘的是 0，改用启动日志里的实际端口
+        if [ -z "$_lp" ] || [ "$_lp" = "0" ]; then
+          _lp=$(lan_actual_port)
+        fi
+        echo "局域网：端口 ${_lp:-0}，Key $(lan_key_of)"
       else
         echo "局域网：未开启"
       fi
@@ -168,9 +195,11 @@ case "$1" in
   # 供 WebUI 解析的机器可读输出，一行一个 key=value
   info)
     if is_running; then
+      _isrun=1
       echo "running=1"
       echo "pid=$(cat "$PIDFILE")"
     else
+      _isrun=0
       echo "running=0"
       echo "pid="
     fi
@@ -180,7 +209,17 @@ case "$1" in
     echo "host=127.0.0.1"
     echo "key=$(key_of)"
     echo "lan=$LAN"
-    echo "lan_port=$(lan_port_of)"
+    _lan_req=$(lan_port_of)
+    echo "lan_port=$_lan_req"
+    # 供 WebUI 展示的真实端口：落盘值若是 0（自动分配）且服务在跑，
+    # 就回退到启动日志里的实际端口；否则直接用落盘值
+    _lan_actual=$_lan_req
+    if [ -z "$_lan_actual" ] || [ "$_lan_actual" = "0" ]; then
+      if [ "$_isrun" = "1" ]; then
+        _lan_actual=$(lan_actual_port)
+      fi
+    fi
+    echo "lan_actual_port=${_lan_actual:-0}"
     echo "lan_key=$(lan_key_of)"
     echo "autostart=$AUTOSTART"
     echo "data_dir=$DATA_DIR"

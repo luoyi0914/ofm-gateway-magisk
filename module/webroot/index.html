@@ -311,11 +311,13 @@
     document.getElementById("autostart").checked = info.autostart === "1";
   }
 
-  // 中继实际监听的端口由服务运行期决定，info 读的是落盘值
+  // 中继端口的落盘值只是「请求值」：LAN_PORT=0（自动分配）时停在 0，
+  // 实际端口由服务运行期决定，ofmctl 会从启动日志里取到 lan_actual_port。
   function lanLine(info) {
     if (info.lan !== "1") return "未开启";
-    if (!info.lan_port || info.lan_port === "0") return "已开启，端口待服务分配";
-    return "端口 " + info.lan_port + "，Key " + (info.lan_key || "（尚未生成）");
+    var p = info.lan_actual_port || info.lan_port;
+    if (!p || p === "0") return "已开启，端口待服务分配";
+    return "端口 " + p + "，Key " + (info.lan_key || "（尚未生成）");
   }
 
   function refresh() {

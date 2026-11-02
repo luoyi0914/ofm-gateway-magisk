@@ -4,7 +4,7 @@
 #
 # 运行时由两块组成，可以分开更新：
 #   usr/  Node 与它的 Android 依赖库，约 90 MB，只在换 Node 时才变
-#   app/  上游服务代码，约 7.5 MB，每次升级变的都是它
+#   app/  上游服务代码，约 8 MB，每次升级变的都是它
 # 完整包带 runtime/usr.tgz + runtime/app.tgz；增量包只带 app.tgz。
 # 增量包靠 runtime/usr-rev 里的指纹判断设备上那份 usr 能否直接复用 ——
 # 对不上就拒绝安装（退出码 2），让用户改刷完整包，而不是装出半套运行时。

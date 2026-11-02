@@ -3,7 +3,7 @@
 #
 # 用法：
 #   ./scripts/build.sh                 完整包：组装 app + 带 usr 运行时（约 36 MB）
-#   ./scripts/build.sh --patch         增量包：只带 app（约 3.4 MB），复用设备上的 usr
+#   ./scripts/build.sh --patch         增量包：只带 app（约 2 MB），复用设备上的 usr
 #   ./scripts/build.sh --usr <src>     指定 usr 来源（usr 目录，或含 usr/ 的 tgz）
 #   ./scripts/build.sh --app <dir>     复用已组装好的 app 目录，跳过上游拉取（离线构建）
 #   ./scripts/build.sh --upstream <v>  指定上游服务版本（默认 2.7.3）
@@ -13,9 +13,9 @@
 #
 # 为什么分两种包：
 #   usr/ 是 Node 与它的 Android 依赖库，解压后 90 MB，压成 33 MB，几乎不随版本变化；
-#   app/ 是上游服务代码，2.7.x 解压后 12 MB，压成约 3.4 MB，每次升级变的正是它。
+#   app/ 是上游服务代码，2.7.x 解压后约 8 MB，压成约 2 MB，每次升级变的正是它。
 #   完整包两块都带；增量包只带 app，安装时核对设备上 usr 的指纹后原地复用。
-#   于是日常升级的下载量从 36 MB 降到约 3.4 MB。
+#   于是日常升级的下载量从 36 MB 降到约 2 MB。
 #
 # 上游 2.6 起仓库里多了约 100 MB 的平台二进制（Windows 工作台引擎 + 分片），
 # Android 用不上：拉源码用 partial clone + sparse，组装时也不带进 app/。
