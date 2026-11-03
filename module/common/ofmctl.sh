@@ -24,19 +24,76 @@ RT_DIR=/data/adb/ofm-runtime
 NODE="$RT_DIR/usr/bin/node"
 APP_DIR="$RT_DIR/app"
 PIDFILE="$DATA_DIR/ofm.pid"
+# 日志按天分文件：$DATA_DIR/logs/ofm-YYYY-MM-DD.log。
+# LOG_FILE 保留为旧版单文件日志路径，仅作兼容回退（从旧版升级后旧日志仍可读）。
+LOG_DIR="$DATA_DIR/logs"
 LOG_FILE="$DATA_DIR/ofm.log"
 LOG_FIFO="$DATA_DIR/ofm.log.fifo"
 LOG_PIDFILE="$DATA_DIR/ofm.log.pid"
+LOG_KEEP_DAYS=${LOG_KEEP_DAYS:-14}
 
-# 输出会混着行尾的 \r（SSE 进度类日志），先统一成 \n 再打时间戳
-stamp_lines() {
+# ---- 按天日志相关辅助 ----
+
+# 日期格式必须是 YYYY-MM-DD，供 WebUI 传参时防路径穿越
+valid_day() {
+  case "$1" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# 最新一份日志：优先最新的分天文件，没有则回退旧版单文件 ofm.log
+latest_log_file() {
+  _ll=$(ls -1 "$LOG_DIR"/ofm-*.log 2>/dev/null | sort -r | head -n 1)
+  if [ -n "$_ll" ]; then printf '%s' "$_ll"; return 0; fi
+  if [ -f "$LOG_FILE" ]; then printf '%s' "$LOG_FILE"; return 0; fi
+  return 1
+}
+
+# 只保留最近 $LOG_KEEP_DAYS 个分天文件，更早的删除
+cleanup_old_logs() {
+  [ -d "$LOG_DIR" ] || return 0
+  _keep=$LOG_KEEP_DAYS
+  case "$_keep" in ''|*[!0-9]*) _keep=14 ;; esac
+  [ "$_keep" -ge 1 ] || return 0
+  _cnt=$(ls -1 "$LOG_DIR"/ofm-*.log 2>/dev/null | wc -l)
+  [ "$_cnt" -gt "$_keep" ] || return 0
+  ls -1 "$LOG_DIR"/ofm-*.log 2>/dev/null | sort | head -n $((_cnt - _keep)) | while IFS= read -r _old; do
+    rm -f "$_old"
+  done
+}
+
+# 从 FIFO 读服务输出：去掉行尾 \r、加时间戳、按「当前日期」写入对应分天文件；
+# 跨零点时自动切到新的一天文件。文件句柄用 fd 3 常开，避免逐行开关文件。
+log_writer() {
+  mkdir -p "$LOG_DIR" 2>/dev/null
+  chmod 0700 "$LOG_DIR" 2>/dev/null
+  _cur_date=
+  _fd_open=0
   tr '\r' '\n' | while IFS= read -r line; do
-    printf '%s %s\n' "$(date '+%m/%d-%H:%M:%S')" "$line"
+    _d=$(date '+%Y-%m-%d')
+    if [ "$_d" != "$_cur_date" ]; then
+      [ "$_fd_open" = 1 ] && exec 3>&-
+      _cur_date=$_d
+      if exec 3>>"$LOG_DIR/ofm-$_d.log"; then
+        _fd_open=1
+        cleanup_old_logs
+      else
+        _fd_open=0
+      fi
+    fi
+    if [ "$_fd_open" = 1 ]; then
+      printf '%s %s\n' "$(date '+%m/%d-%H:%M:%S')" "$line" >&3
+    else
+      # 分天文件打不开时退回旧版单文件，至少不丢日志
+      printf '%s %s\n' "$(date '+%m/%d-%H:%M:%S')" "$line" >>"$LOG_FILE"
+    fi
   done
 }
 ensure_dirs() {
-  mkdir -p "$DATA_DIR"
+  mkdir -p "$DATA_DIR" "$LOG_DIR"
   chmod 0700 "$DATA_DIR"
+  chmod 0700 "$LOG_DIR" 2>/dev/null
 }
 
 is_running() {
@@ -87,8 +144,9 @@ lan_port_of() {
 # 「LAN API：http://<ip>:<port>/v1」一行里。这里取最近一次出现的端口，
 # 取不到就返回空（调用方自行回退）。只扫日志尾部，避免 ofm.log 很长时拖慢 status/info。
 lan_actual_port() {
-  [ -f "$LOG_FILE" ] || return 0
-  tail -n 3000 "$LOG_FILE" 2>/dev/null \
+  _lf=$(latest_log_file) || return 0
+  [ -n "$_lf" ] && [ -f "$_lf" ] || return 0
+  tail -n 3000 "$_lf" 2>/dev/null \
     | grep -a 'LAN API' | tail -n 1 \
     | sed -n 's#.*:\([0-9][0-9]*\)/v1.*#\1#p'
 }
@@ -108,12 +166,13 @@ start() {
   clear_stale_lock
   rm -f "$PIDFILE"
 
-  # 日志只追加不轮转，长期运行会无限增长。启动前若已超过 4 MB，
-  # 只保留最近 2 MB，避免占满数据分区（单次运行期间仍可能继续增长）。
-  if [ -f "$LOG_FILE" ]; then
-    _sz=$(wc -c <"$LOG_FILE" 2>/dev/null || echo 0)
+  # 日志已按天分文件，单日文件通常很小；仍保留单文件 4MB→2MB 的上限兜底，
+  # 防止某天日志异常膨胀占满数据分区。
+  _trim=$(latest_log_file) || _trim=
+  if [ -n "$_trim" ] && [ -f "$_trim" ]; then
+    _sz=$(wc -c <"$_trim" 2>/dev/null || echo 0)
     if [ "${_sz:-0}" -gt 4194304 ]; then
-      tail -c 2097152 "$LOG_FILE" >"$LOG_FILE.tmp" 2>/dev/null && mv -f "$LOG_FILE.tmp" "$LOG_FILE"
+      tail -c 2097152 "$_trim" >"$_trim.tmp" 2>/dev/null && mv -f "$_trim.tmp" "$_trim"
     fi
   fi
 
@@ -139,18 +198,18 @@ start() {
     set -- "$@" --no-lan
   fi
 
-  # 服务输出先进 FIFO，由 stamp_lines 加时间戳再落盘。
+  # 服务输出先进 FIFO，由 log_writer 加时间戳并按天落盘。
   # 这样 node 的 PID 仍是真实进程（$!），启停不受管道影响。
   rm -f "$LOG_FIFO"
   if ! mkfifo -m 0600 "$LOG_FIFO" 2>/dev/null; then
     # 无法建 FIFO（FIFO 文件系统不支持或目录权限）时退化为直接写日志，
-    # 否则服务根本起不来
+    # 否则服务根本起不来。直接写时落到当天的分天文件。
     OFM_HOME="$DATA_DIR" HOME="$MODDIR" OFM_MAGPIE_BINARY="$OFM_MAGPIE_BINARY" \
-      "$NODE" packages/standalone/cli.mjs "$@" >>"$LOG_FILE" 2>&1 &
+      "$NODE" packages/standalone/cli.mjs "$@" >>"$LOG_DIR/ofm-$(date '+%Y-%m-%d').log" 2>&1 &
     echo $! >"$PIDFILE"
     return 0
   fi
-  ( stamp_lines <"$LOG_FIFO" >>"$LOG_FILE" ) &
+  ( log_writer <"$LOG_FIFO" ) &
   echo $! >"$LOG_PIDFILE"
 
   OFM_HOME="$DATA_DIR" HOME="$MODDIR" OFM_MAGPIE_BINARY="$OFM_MAGPIE_BINARY" \
@@ -204,7 +263,7 @@ case "$1" in
       else
         echo "局域网：未开启"
       fi
-      echo "日志：$LOG_FILE"
+      echo "日志目录：$LOG_DIR（按天 ofm-YYYY-MM-DD.log）"
     else
       echo "未运行"
     fi
@@ -241,8 +300,14 @@ case "$1" in
     echo "lan_key=$(lan_key_of)"
     echo "autostart=$AUTOSTART"
     echo "data_dir=$DATA_DIR"
-    echo "log_file=$LOG_FILE"
+    echo "log_dir=$LOG_DIR"
+    echo "log_file=$(latest_log_file 2>/dev/null || printf '%s' "$LOG_DIR/ofm-$(date '+%Y-%m-%d').log")"
+    echo "log_keep_days=$LOG_KEEP_DAYS"
     echo "runtime=$(cat "$RT_DIR/.version" 2>/dev/null)"
+    echo "module_version=$(sed -n 's/^version=//p' "$MODDIR/module.prop" 2>/dev/null)"
+    echo "device_model=$(getprop ro.product.model 2>/dev/null)"
+    echo "android_version=$(getprop ro.build.version.release 2>/dev/null)"
+    echo "abi=$(getprop ro.product.cpu.abi 2>/dev/null)"
     ;;
   # 只允许 WebUI 改这几项，且值必须通过校验；不做任意写
   set-config)
@@ -275,8 +340,25 @@ case "$1" in
   log)
     _n=${2:-40}
     case "$_n" in ''|*[!0-9]*) _n=40 ;; esac
-    [ -f "$LOG_FILE" ] || { echo "暂无日志"; exit 0; }
-    tail -n "$_n" "$LOG_FILE"
+    _day=$3
+    if [ -n "$_day" ]; then
+      valid_day "$_day" || { echo "日期格式应为 YYYY-MM-DD" >&2; exit 1; }
+      _lf="$LOG_DIR/ofm-$_day.log"
+    else
+      _lf=$(latest_log_file) || _lf=
+    fi
+    [ -n "$_lf" ] && [ -f "$_lf" ] || { echo "暂无日志"; exit 0; }
+    tail -n "$_n" "$_lf"
+    ;;
+  # 供 WebUI 日志下拉：一行一个「day=YYYY-MM-DD size=字节」，最新的在前
+  log-days)
+    if [ -d "$LOG_DIR" ]; then
+      ls -1 "$LOG_DIR"/ofm-*.log 2>/dev/null | sort -r | while IFS= read -r _f; do
+        _d=${_f##*/}; _d=${_d#ofm-}; _d=${_d%.log}
+        _sz=$(wc -c <"$_f" 2>/dev/null || echo 0)
+        printf 'day=%s size=%s\n' "$_d" "${_sz:-0}"
+      done
+    fi
     ;;
   # 控制台数据：用 API Key 换会话再拉摘要，密钥不进 URL、不落盘。
   # 会话 cookie 从响应头里取、再用 Cookie 头带回：不依赖 curl 的 -c/-b cookie jar
@@ -305,5 +387,5 @@ case "$1" in
     [ -n "$_k" ] || { echo "尚未生成管理密钥（先启动一次服务再试）" >&2; exit 1; }
     printf '%s\n' "$_k"
     ;;
-  *) echo "用法：$0 start|stop|restart|status|info|set-config|log|console|mgmt-key" >&2; exit 1 ;;
+  *) echo "用法：$0 start|stop|restart|status|info|set-config|log|log-days|console|mgmt-key" >&2; exit 1 ;;
 esac

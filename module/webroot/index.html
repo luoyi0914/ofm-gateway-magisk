@@ -193,7 +193,16 @@
   <h2>日志
     <button class="ghost" id="btnLog" style="padding:5px 12px;font-size:13px">刷新</button>
   </h2>
+  <div class="field">
+    <label for="logDay">日期（按天记录，保留最近若干天）</label>
+    <select id="logDay"></select>
+  </div>
   <pre class="log" id="log">读取中…</pre>
+  <div class="actions" style="margin-top:12px;grid-template-columns:1fr 1fr">
+    <button class="ghost" id="btnCopyLog">复制日志</button>
+    <button class="primary" id="btnIssue">提交议题</button>
+  </div>
+  <div class="hint">「提交议题」会在浏览器打开预填好标题与当天日志尾部的 GitHub 新建议题页，确认后提交即可；不内置任何令牌，只带日志尾部（约 3KB）。需要贴完整日志时，先「复制日志」再粘贴。</div>
 </div>
 
 <div class="foot">
@@ -281,6 +290,7 @@
 
   var current = {};
   var consoleUrl = "";
+  var logDay = "";
 
   function render(info) {
     current = info;
@@ -337,11 +347,55 @@
     });
   }
 
-  function loadLog() {
-    return exec("sh " + q(CTL) + " log 60").then(function (r) {
+  function todayStr() {
+    var d = new Date();
+    var p = function (n) { return (n < 10 ? "0" : "") + n; };
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+  }
+
+  // 读取某天（默认当前选择/最新）的日志
+  function loadLog(day) {
+    var useDay = day || logDay || "";
+    logDay = useDay;
+    var cmd = "sh " + q(CTL) + " log 80" + (useDay ? " " + q(useDay) : "");
+    return exec(cmd).then(function (r) {
       var pre = document.getElementById("log");
-      pre.textContent = r.stdout.trim() || "暂无日志";
+      pre.textContent = (r.stdout && r.stdout.replace(/\s+$/, "")) || "暂无日志";
       pre.scrollTop = pre.scrollHeight;
+    });
+  }
+
+  // 读取按天日志清单，填充日期下拉；没有分天文件时补上今天
+  function loadDays() {
+    return exec("sh " + q(CTL) + " log-days").then(function (r) {
+      var sel = document.getElementById("logDay");
+      var prev = sel.value || logDay;
+      var days = [];
+      (r.stdout || "").split("\n").forEach(function (line) {
+        line = line.trim();
+        if (!line) return;
+        var o = {};
+        line.split(/\s+/).forEach(function (tok) {
+          var i = tok.indexOf("=");
+          if (i > 0) o[tok.slice(0, i)] = tok.slice(i + 1);
+        });
+        if (o.day) days.push(o.day);
+      });
+      var today = todayStr();
+      if (days.indexOf(today) < 0) days.unshift(today);
+      var seen = {};
+      days = days.filter(function (d) { if (seen[d]) return false; seen[d] = 1; return true; });
+      sel.innerHTML = "";
+      days.forEach(function (d) {
+        var opt = document.createElement("option");
+        opt.value = d;
+        opt.textContent = d;
+        sel.appendChild(opt);
+      });
+      if (prev && days.indexOf(prev) >= 0) sel.value = prev;
+      else if (days.length) sel.value = days[0];
+      logDay = sel.value || today;
+      return logDay;
     });
   }
 
@@ -392,7 +446,7 @@
     toast(label + "中…");
     exec("sh " + q(CTL) + " " + key).then(function (r) {
       if (r.errno !== 0) throw new Error(r.stderr || label + "失败");
-      return refresh().then(loadLog);
+      return refresh().then(loadDays).then(function () { return loadLog(); });
     }).then(function () {
       toast(label + "完成");
     }).catch(function (e) {
@@ -471,14 +525,77 @@
       });
   }
 
+  // 组装议题正文：环境 + 当天日志尾部
+  function buildIssueBody(logText, day) {
+    var i = current || {};
+    return [
+      "### 问题描述",
+      "（请在此描述遇到的问题或期望的行为）",
+      "",
+      "### 环境",
+      "- 模块版本：" + (i.module_version || "未知"),
+      "- 运行时：" + (i.runtime || "未知"),
+      "- 设备：" + (i.device_model || "未知") + " / Android " + (i.android_version || "未知") + "（" + (i.abi || "未知") + "）",
+      "- 服务状态：" + (i.running === "1" ? "运行中" : "未运行") + "，端口 " + (i.port || "未知"),
+      "- 提交时间：" + new Date().toString(),
+      "",
+      "### 日志（" + day + "，尾部）",
+      "```",
+      logText,
+      "```"
+    ].join("\n");
+  }
+
+  // 打开外部浏览器（WebUI 的 WebView 内直接跳转会被拦），失败则复制链接兜底
+  function openUrl(url) {
+    return exec("am start -a android.intent.action.VIEW -d " + q(url)).then(function (r) {
+      if (r.errno !== 0) throw new Error(r.stderr || "无法打开浏览器");
+      toast("已打开议题页面，确认内容后提交即可");
+    }).catch(function () {
+      copyText(url, "已复制议题链接，请粘贴到浏览器打开");
+    });
+  }
+
+  function submitIssue() {
+    var btn = document.getElementById("btnIssue");
+    btn.disabled = true;
+    var day = logDay || todayStr();
+    exec("sh " + q(CTL) + " log 200 " + q(day)).then(function (r) {
+      var logText = (r.stdout || "").replace(/\s+$/, "");
+      if (!logText) logText = "（暂无日志）";
+      if (logText.length > 3000) logText = "…（前略）\n" + logText.slice(-3000);
+      var title = "【问题反馈】OFM 网关 " + day;
+      var body = buildIssueBody(logText, day);
+      var url = "https://github.com/luoyi0914/ofm-gateway-magisk/issues/new?title=" +
+        encodeURIComponent(title) + "&body=" + encodeURIComponent(body);
+      return openUrl(url);
+    }).catch(function (e) {
+      toast(e.message || String(e), true);
+    }).then(function () {
+      btn.disabled = false;
+    });
+  }
+
   document.getElementById("btnStart").onclick = function () { act("start", "启动"); };
   document.getElementById("btnStop").onclick = function () { act("stop", "停止"); };
   document.getElementById("btnRestart").onclick = function () { act("restart", "重启"); };
   document.getElementById("btnSave").onclick = function () { save(false); };
   document.getElementById("btnSaveRestart").onclick = function () { save(true); };
   document.getElementById("btnLog").onclick = function () {
-    loadLog().then(function () { toast("已刷新"); });
+    loadDays().then(function () { return loadLog(); }).then(function () { toast("已刷新"); })
+      .catch(function (e) { toast(e.message || String(e), true); });
   };
+  document.getElementById("logDay").onchange = function () {
+    logDay = this.value;
+    loadLog(logDay).then(function () { toast("已切换到 " + logDay); })
+      .catch(function (e) { toast(e.message || String(e), true); });
+  };
+  document.getElementById("btnCopyLog").onclick = function () {
+    var txt = document.getElementById("log").textContent || "";
+    if (!txt || txt === "暂无日志" || txt === "读取中…") { toast("暂无可复制的日志", true); return; }
+    copyText(txt, "日志已复制");
+  };
+  document.getElementById("btnIssue").onclick = submitIssue;
   document.getElementById("btnConsole").onclick = function () {
     document.getElementById("btnConsole").disabled = true;
     loadConsole().then(function () {
@@ -545,6 +662,9 @@
   }
 
   refresh()
+    .then(function () {
+      return loadDays().catch(function () { logDay = todayStr(); return logDay; });
+    })
     .then(function () {
       return loadLog();
     })

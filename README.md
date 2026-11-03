@@ -125,7 +125,7 @@ Key 由服务首次启动时自动生成并存入 `/data/adb/ofm/settings.json`�
 - **操作**：启动 / 停止 / 重启
 - **配置**：端口、局域网访问开关与端口、开机自启，可「保存」或「保存并重启」
 - **控制台**：推理服务、渠道模块、EAC 授权、可用模型计数、刷新间隔、输出上限、目录同步时间
-- **日志**：`ofm.log` 最后 60 行
+- **日志**：按天分文件（`logs/ofm-YYYY-MM-DD.log`），可下拉切换日期、「复制日志」，或一键「提交议题」到仓库
 
 页面地址与密钥均支持点击复制。完整管理面板（渠道登录、用量看板、Key 轮换）带
 `frame-ancestors 'none'` 与 HttpOnly 会话，无法内嵌，请复制地址到浏览器打开后登录。
@@ -149,6 +149,7 @@ Key 由服务首次启动时自动生成并存入 `/data/adb/ofm/settings.json`�
 | `LAN` | `0` | 局域网访问。`1` 额外开一个中继（独立 Key） |
 | `LAN_PORT` | `0` | 中继端口。`0` 由系统自动分配 |
 | `AUTOSTART` | `1` | 开机自启，`0` 关闭 |
+| `LOG_KEEP_DAYS` | `14` | 日志按天分文件，只保留最近这么多天，更早的自动清理 |
 | `DATA_DIR` | `/data/adb/ofm` | 数据目录 |
 
 本机监听固定为 `127.0.0.1`，不可改成通配地址 —— 上游从 2.5.x 起只允许回环绑定，
@@ -166,7 +167,9 @@ su -c "sh $CTL status"     # 运行状态
 su -c "sh $CTL start"      # 启动
 su -c "sh $CTL stop"       # 停止
 su -c "sh $CTL restart"    # 重启
-su -c "sh $CTL log 80"     # 最近 80 行日志
+su -c "sh $CTL log 80"     # 最近 80 行日志（默认最新一天）
+su -c "sh $CTL log 80 2026-11-03"  # 指定某一天的日志
+su -c "sh $CTL log-days"   # 列出有哪些天的日志（WebUI 下拉用）
 su -c "sh $CTL info"       # 机器可读状态（WebUI 用）
 ```
 
@@ -176,8 +179,8 @@ su -c "sh $CTL info"       # 机器可读状态（WebUI 用）
 | --- | --- |
 | `/data/adb/modules/ofm_gateway` | 模块本体（脚本、运行时压缩包、webroot） |
 | `/data/adb/ofm-runtime` | 解压出来的 Node 运行时与服务代码 |
-| `/data/adb/ofm` | 数据：`settings.json`、`stats.json`、`ofm.log` 等 |
-| `/data/adb/ofm/ofm.log` | 服务日志，含管理面板一次性登录链接 |
+| `/data/adb/ofm` | 数据：`settings.json`、`stats.json`、`logs/` 等 |
+| `/data/adb/ofm/logs/` | 按天分文件的服务日志 `ofm-YYYY-MM-DD.log`，含管理面板一次性登录链接；旧版单文件 `ofm.log` 仍兼容读取 |
 
 运行时放在 `/data/adb/ofm-runtime` 而不是模块目录，是因为模块升级时旧目录会被整体清理，
 正在运行的进程会被一并杀掉。

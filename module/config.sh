@@ -16,5 +16,9 @@ LAN_PORT=0
 # 开机自启：1 开启，0 关闭
 AUTOSTART=1
 
+# 日志保留天数。日志按天分文件（$DATA_DIR/logs/ofm-YYYY-MM-DD.log），
+# 只保留最近这么多天，更早的自动清理。
+LOG_KEEP_DAYS=14
+
 # 数据目录（settings.json、统计、渠道账号都放这里）
 DATA_DIR=/data/adb/ofm
