@@ -31,7 +31,7 @@
 
 > [!NOTE]
 > ### 📦 姊妹项目：OFM 本机网关 · Android 版
-> **[luoyi0914/ofm-gateway-android](https://github.com/ofm-gateway-android)**
+> **[luoyi0914/ofm-gateway-android](https://github.com/luoyi0914/ofm-gateway-android)**
 > —— 同一套上游服务与 Magpie 引擎打成的**独立 APK**，不装模块也能用：
 > 免 root / 免 Shizuku / 免 Termux，前台服务承载，带原生 Material 3 管理界面
 > （状态、模型列表、日志、设置），默认端口 `15000`。
