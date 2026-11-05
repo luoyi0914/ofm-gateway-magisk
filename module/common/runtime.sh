@@ -27,6 +27,10 @@ err_patch_mismatch() {
 }
 
 # 服务正拿着 $RT_DIR 里的可执行文件，替换前必须先停掉。
+#
+# 服务现在由 ofmctl.sh 用 setsid 拉起，是独立会话/进程组的组长；
+# 所以这里优先按进程组发 TERM（Magpie 子进程会跟着一起退，不留孤儿），
+# 收敛不了再逐 pid 补 KILL。旧版留下的、不是组长的进程按单 pid 处理。
 stop_running() {
   _was_running=0
   for _p in $(pidof node 2>/dev/null); do
@@ -36,16 +40,31 @@ stop_running() {
 
   for _p in $(pidof node 2>/dev/null); do
     tr '\0' ' ' <"/proc/$_p/cmdline" 2>/dev/null | grep -q "$RT_DIR" || continue
-    kill "$_p" 2>/dev/null
+    # 第 4 段是 session id：等于自身 pid 说明它是组长，可以整组发信号
+    _sid=$(sed -n '1s/.*) //p' "/proc/$_p/stat" 2>/dev/null | awk '{print $4}')
+    if [ "$_sid" = "$_p" ]; then
+      kill -TERM -"$_p" 2>/dev/null
+    else
+      kill -TERM "$_p" 2>/dev/null
+    fi
   done
-  for _ in 1 2 3 4 5; do
+  _i=0
+  while [ "$_i" -lt 5 ]; do
     _alive=0
     for _p in $(pidof node 2>/dev/null); do
       tr '\0' ' ' <"/proc/$_p/cmdline" 2>/dev/null | grep -q "$RT_DIR" && _alive=1
     done
     [ $_alive = 0 ] && break
+    _i=$((_i + 1))
     sleep 1
   done
+  # 还没退就补 KILL，否则替换 /data/adb/ofm-runtime 会留下拿着已删文件的进程
+  for _p in $(pidof node 2>/dev/null); do
+    tr '\0' ' ' <"/proc/$_p/cmdline" 2>/dev/null | grep -q "$RT_DIR" || continue
+    _sid=$(sed -n '1s/.*) //p' "/proc/$_p/stat" 2>/dev/null | awk '{print $4}')
+    if [ "$_sid" = "$_p" ]; then kill -KILL -"$_p" 2>/dev/null; else kill -KILL "$_p" 2>/dev/null; fi
+  done
+  sleep 1
 }
 
 # 先解到同一文件系统下的暂存目录，再改名替换：解压失败时旧的那块仍在，不会留下半套。

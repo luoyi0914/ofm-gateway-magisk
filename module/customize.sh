@@ -11,6 +11,14 @@ fail() {
   if command -v abort >/dev/null 2>&1; then abort "$1"; else echo "$1" >&2; exit 1; fi
 }
 
+# 安装期间会替换 /data/adb/ofm-runtime 里的文件，而旧版的守护进程可能正在跑着。
+# 它一旦发现服务没了就会按「意图=运行」把 node 重新拉起来 ——
+# 拉起的是正要被替换的那份运行时，会留下拿着已删文件的进程。
+# 所以先让守护进程退出；重启后 service.sh 会重新拉起新版的守护进程。
+if [ -f "$MODDIR/common/ofmctl.sh" ]; then
+  OFM_MODDIR="$MODDIR" sh "$MODDIR/common/ofmctl.sh" daemon stop >/dev/null 2>&1
+fi
+
 OFM_MODDIR="$MODDIR" sh "$MODDIR/common/runtime.sh" now
 _rc=$?
 

@@ -26,6 +26,8 @@
 或者你压根不想装它时，网关就没了。这个模块把同一套服务搬到 Magisk / KernelSU 层：
 
 - 开机由 root 拉起，不占前台、不弹通知、不参与保活竞争
+- 启停由一个常驻守护进程执行：它由开机脚本在系统域启动，面板里点启停也只是把请求交给它，
+  所以退出管理器不影响服务
 - 只要手机活着，`127.0.0.1:15656` 就一直在
 - 数据放在独立目录，与 App 的数据互不干扰
 
@@ -45,10 +47,11 @@
 | --- | --- |
 | **独立运行** | 模块自带 Node 运行时与完整服务，APK 可以完全不装 |
 | **开机自启** | KernelSU / Magisk 在 boot 阶段拉起，可随时关闭 |
+| **守护进程** | `ofmd.sh` 常驻，开机由脚本拉起；服务掉了按「意图」自动拉回，连续失败会退避 |
 | **端口固定** | 默认 `15656`，被占用时自动顺延并记住实际端口 |
 | **局域网中继** | 可选开启，用自己的 LAN Key，与本机 API Key 互不通用 |
-| **WebUI 管理** | KernelSU 里点「打开」即可查看状态、启停、改配置、看日志 |
-| **动作按钮** | 没有 WebUI 时也能在管理器里点「动作」操作 |
+| **WebUI 管理** | KernelSU 里点「打开」即可查看状态、改配置、看日志；启停只「投递请求」，由守护进程执行 |
+| **动作按钮** | 没有 WebUI 时也能在管理器里点「动作」操作，与 WebUI 走同一条请求通道 |
 | **数据独立** | 全部落在 `/data/adb/ofm`，与 App 数据隔离 |
 | **更新检测** | 通过 `update.json` 支持管理器内直接检查更新 |
 
@@ -137,6 +140,27 @@ Key 由服务首次启动时自动生成并存入 `/data/adb/ofm/settings.json`�
 - **控制台**：推理服务、渠道模块、EAC 授权、可用模型计数、刷新间隔、输出上限、目录同步时间
 - **日志**：按天分文件（`logs/ofm-YYYY-MM-DD.log`），可下拉切换日期、「复制日志」，或一键「提交议题」到仓库
 
+### 启停为什么交给守护进程
+
+页面的 `exec` 走的是 `ksud debug su`，进程留在管理器 App 的 cgroup 里，
+App 一退出就会被系统回收 —— `setsid` / `nohup` 都改不了 cgroup 归属
+（KernelSU-Next #1180 有实测）。所以页面不再直接执行启停，而是：
+
+1. `sh $CTL submit <start|stop|restart>` 把动作写进 `/data/adb/ofm/control/queue/`；
+2. 常驻守护进程 `ofmd.sh` 取走请求、真正执行启停，再把结果写回；
+3. 页面拿到 `rc=0`（完成）或 `rc=2`（处理中）后，每 800ms 查一次 `info`，
+   直到 `running` 变成预期值，最长等 30 秒；超时才报错。
+
+守护进程由开机脚本在系统域拉起，所以退出管理器不影响它。若守护进程本身是从面板临时拉起的
+（例如开机脚本没跑、或你手动 `daemon stop` 过），它仍留在 App 域，`info` 会给出
+`daemon_persistent=0`，页面顶部出现警示条：
+
+> 守护进程由管理器会话拉起（降级模式）：退出管理器可能被回收。请改用模块「动作」按钮启动，或重启手机恢复常驻。
+
+动作按钮和开机脚本一样在系统域执行，所以它能被当作「把守护进程放到正确位置」的入口；
+`daemon=0`（守护进程根本没在跑）时警示条换成「守护进程未运行：此时从面板启停的服务可能
+在退出管理器后被系统回收。」
+
 页面地址与密钥均支持点击复制。完整管理面板（渠道登录、用量看板、Key 轮换）带
 `frame-ancestors 'none'` 与 HttpOnly 会话，无法内嵌，请复制地址到浏览器打开后登录。
 
@@ -173,15 +197,30 @@ Key 由服务首次启动时自动生成并存入 `/data/adb/ofm/settings.json`�
 
 ```sh
 CTL=/data/adb/modules/ofm_gateway/common/ofmctl.sh
-su -c "sh $CTL status"     # 运行状态
-su -c "sh $CTL start"      # 启动
-su -c "sh $CTL stop"       # 停止
-su -c "sh $CTL restart"    # 重启
-su -c "sh $CTL log 80"     # 最近 80 行日志（默认最新一天）
+su -c "sh $CTL status"             # 运行状态（含守护进程与其 cgroup 归属）
+su -c "sh $CTL start"              # 启动
+su -c "sh $CTL stop"               # 停止
+su -c "sh $CTL restart"            # 重启
+su -c "sh $CTL submit start"       # 投递启动请求（WebUI 用的就是这条）
+su -c "sh $CTL submit restart 20"  # 投递并最多等 20 秒
+su -c "sh $CTL daemon status"      # 守护进程状态、pid、归属
+su -c "sh $CTL daemon start"       # 补起守护进程（从哪儿执行就继承哪儿的 cgroup）
+su -c "sh $CTL log 80"             # 最近 80 行日志（默认最新一天）
 su -c "sh $CTL log 80 2026-11-03"  # 指定某一天的日志
-su -c "sh $CTL log-days"   # 列出有哪些天的日志（WebUI 下拉用）
-su -c "sh $CTL info"       # 机器可读状态（WebUI 用）
+su -c "sh $CTL log-days"           # 列出有哪些天的日志（WebUI 下拉用）
+su -c "sh $CTL info"               # 机器可读状态（WebUI 用）
 ```
+
+`submit` 输出一行 `id=… rc=… msg=…`：`rc=0` 成功、`rc=1` 失败、`rc=2` 表示还在处理
+（不是错误，接着查 `info` 的 `running` 即可）。`start` / `stop` / `restart` 现在等价于
+同步版 `submit`（分别最多等 20 / 15 / 25 秒），同样是交给守护进程执行，不再直接起停。
+
+`daemon start` 只是「把守护进程拉起来」，它落在哪个域取决于你从哪儿执行：
+开机脚本与「动作」按钮在系统域；WebUI 和终端里的 `su` 会继承调用方 App 的 cgroup，
+属于降级模式。想让守护进程回到系统域，用动作按钮启动，或重启手机。
+
+`info` 里与守护进程相关的键：`daemon`（是否在跑）、`daemon_pid`、`daemon_started`、
+`daemon_persistent`（`1` 系统域、`0` 降级到 App 域）、`daemon_cgroup`（排查用）。
 
 ## 文件都在哪
 
@@ -190,6 +229,7 @@ su -c "sh $CTL info"       # 机器可读状态（WebUI 用）
 | `/data/adb/modules/ofm_gateway` | 模块本体（脚本、运行时压缩包、webroot） |
 | `/data/adb/ofm-runtime` | 解压出来的 Node 运行时与服务代码 |
 | `/data/adb/ofm` | 数据：`settings.json`、`stats.json`、`logs/` 等 |
+| `/data/adb/ofm/control/` | 守护进程的运行时状态：`queue/` 放投递的启停请求与结果，`want_running` 记录「服务应该跑着吗」的意图，另有 `ofmd.pid`、`ofmd.started`、`ofmd.persistent`、`ofmd.cgroup` 与 `ofmd.log` |
 | `/data/adb/ofm/logs/` | 按天分文件的服务日志 `ofm-YYYY-MM-DD.log`，含管理面板一次性登录链接；旧版单文件 `ofm.log` 仍兼容读取 |
 
 运行时放在 `/data/adb/ofm-runtime` 而不是模块目录，是因为模块升级时旧目录会被整体清理，
@@ -197,8 +237,9 @@ su -c "sh $CTL info"       # 机器可读状态（WebUI 用）
 
 ## 卸载
 
-在模块页面移除即可。卸载脚本会先停服务、再删 `/data/adb/ofm-runtime`，
-**不会**动 `/data/adb/ofm` 里的数据与 Key；要彻底清干净请手动删掉该目录。
+在模块页面移除即可。卸载脚本会先停服务、再停守护进程（否则它会把服务重新拉起来）、
+最后删 `/data/adb/ofm-runtime`，**不会**动 `/data/adb/ofm` 里的数据与 Key；
+要彻底清干净请手动删掉该目录。
 
 ## 更新
 

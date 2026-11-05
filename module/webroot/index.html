@@ -71,6 +71,13 @@
   .pill.on { color: var(--accent); }
   .pill.on::before { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
   .pill.off { color: var(--muted); }
+  .warnbar {
+    display: none; margin: 0 0 12px; padding: 10px 12px;
+    border: 1px solid rgba(255, 159, 10, .5); border-left-width: 3px;
+    border-radius: 12px; background: rgba(255, 159, 10, .1);
+    color: var(--text); font-size: 12.5px; line-height: 1.65;
+  }
+  .warnbar.show { display: block; }
   .actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
   button {
     font: inherit; font-size: 14px; padding: 11px 8px; border-radius: 12px;
@@ -126,6 +133,7 @@
 
 <div class="card">
   <h2>状态 <span class="pill" id="statePill">未知</span></h2>
+  <div class="warnbar" id="daemonWarn"></div>
   <div class="row"><span class="k">PID</span><span class="v mono" id="pid">—</span></div>
   <div class="row"><span class="k">地址</span><span class="v mono" id="addr">—</span></div>
   <div class="row"><span class="k">局域网</span><span class="v mono" id="lanAddr">—</span></div>
@@ -324,6 +332,26 @@
       document.getElementById("lanPort").value = info.lan_port || "0";
     }
     document.getElementById("autostart").checked = info.autostart === "1";
+    renderDaemonWarn(info);
+  }
+
+  // 守护进程提示分两种情形，不合并：
+  // daemon≠1 = 启停请求没人执行；daemon_persistent=0 = 守护进程本身不保活。
+  function renderDaemonWarn(info) {
+    var el = document.getElementById("daemonWarn");
+    var text = "";
+    if (info.daemon !== "1") {
+      text = "守护进程未运行：此时从面板启停的服务可能在退出管理器后被系统回收。";
+    } else if (info.daemon_persistent !== "1") {
+      text = "守护进程由管理器会话拉起（降级模式）：退出管理器可能被回收。请改用模块「动作」按钮启动，或重启手机恢复常驻。";
+    }
+    if (text) {
+      el.textContent = text;
+      el.className = "warnbar show";
+    } else {
+      el.textContent = "";
+      el.className = "warnbar";
+    }
   }
 
   // 管理密钥只展示打码形式，点按复制完整值
@@ -341,11 +369,20 @@
     return "端口 " + p + "，Key " + (info.lan_key || "（尚未生成）");
   }
 
-  function refresh() {
+  // 只取状态、不渲染：轮询期间不覆盖用户正在编辑的表单
+  function fetchInfo() {
     return exec("sh " + q(CTL) + " info").then(function (r) {
       if (r.errno !== 0) throw new Error(r.stderr || "读取状态失败");
-      render(parseKV(r.stdout));
+      return parseKV(r.stdout);
     });
+  }
+
+  function refresh() {
+    return fetchInfo().then(render);
+  }
+
+  function sleep(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
   }
 
   function todayStr() {
@@ -442,19 +479,98 @@
     });
   }
 
+  // ---- 启停：面板只「投递请求」，由常驻守护进程执行 ----
+  // 协议（ofmctl.sh submit）：stdout 一行 key=value，
+  //   rc=0 已完成 / rc=1 失败 / rc=2 处理中（不是错误，必须继续轮询 info）。
+  var ACT_POLL_MS = 800;
+  var ACT_TIMEOUT_MS = 30000;
+
+  // submit 的输出是「一行里空格分隔多个 key=value」（id=… rc=… msg=…），
+  // 且 msg 文案本身含空格，不能套用按行切分的 parseKV；msg 取该行剩余部分。
+  function parseSubmit(text) {
+    var out = { id: "", rc: "", msg: "" };
+    String(text || "").split("\n").forEach(function (line) {
+      var rc = /\brc=(\d+)/.exec(line);
+      if (rc) out.rc = rc[1];
+      var id = /\bid=(\S+)/.exec(line);
+      if (id) out.id = id[1];
+      var msg = /\bmsg=([\s\S]*)$/.exec(line);
+      if (msg) out.msg = msg[1].replace(/\s+$/, "");
+    });
+    return out;
+  }
+
+  function submitAct(key) {
+    return exec("sh " + q(CTL) + " submit " + key).then(function (r) {
+      var kv = parseSubmit(r.stdout);
+      if (!kv.rc) {
+        throw new Error(
+          (r.stderr || "").replace(/\s+$/, "") || "启停请求没有按协议返回结果（ofmctl 版本过旧？）"
+        );
+      }
+      if (kv.rc !== "0" && kv.rc !== "1" && kv.rc !== "2") {
+        throw new Error(kv.msg || ("启停请求返回了无法识别的结果：rc=" + kv.rc));
+      }
+      return { rc: kv.rc, msg: kv.msg || "" };
+    });
+  }
+
+  // 轮询到 running 变成期望值为止；超时返回 null。中途读取失败不致命，继续等。
+  function waitRunning(expectRunning) {
+    var deadline = Date.now() + ACT_TIMEOUT_MS;
+    function tick() {
+      return fetchInfo().then(function (info) {
+        if ((info.running === "1") === expectRunning) return info;
+        if (Date.now() >= deadline) return null;
+        return sleep(ACT_POLL_MS).then(tick);
+      }, function () {
+        if (Date.now() >= deadline) return null;
+        return sleep(ACT_POLL_MS).then(tick);
+      });
+    }
+    return tick();
+  }
+
+  // 返回 { ok, msg }：供 save() 复用，不抛错，调用方不必再 try/catch。
   function act(key, label) {
+    var expectRunning = key !== "stop";
+    var okMsg = label + "完成";
     setBusy(true);
     toast(label + "中…");
-    exec("sh " + q(CTL) + " " + key).then(function (r) {
-      if (r.errno !== 0) throw new Error(r.stderr || label + "失败");
-      return refresh().then(loadDays).then(function () { return loadLog(); });
-    }).then(function () {
-      toast(label + "完成");
-    }).catch(function (e) {
-      toast(e.message || String(e), true);
-    }).then(function () {
-      setBusy(false);
-    });
+    return submitAct(key)
+      .then(function (res) {
+        if (res.rc === "1") throw new Error(res.msg || (label + "失败"));
+        if (res.rc === "0" && res.msg) okMsg = res.msg;
+        return waitRunning(expectRunning).then(function (info) {
+          if (!info) {
+            throw new Error(
+              label + "超时：" + (expectRunning ? "服务仍未进入运行状态" : "服务仍未停止") +
+              "，请稍后再刷新查看"
+            );
+          }
+          return info;
+        });
+      })
+      .then(function () {
+        toast(okMsg);
+        return { ok: true, msg: okMsg };
+      })
+      .catch(function (e) {
+        var msg = e.message || String(e);
+        toast(msg, true);
+        return { ok: false, msg: msg };
+      })
+      .then(function (result) {
+        // 保持按钮禁用直到状态/日志刷新完，避免刷新期间被再次点击
+        return refresh()
+          .then(loadDays)
+          .then(function () { return loadLog(); })
+          .catch(function () {})
+          .then(function () {
+            setBusy(false);
+            return result;
+          });
+      });
   }
 
   function save(andRestart) {
@@ -506,23 +622,34 @@
       });
     });
 
+    var restartFailed = false;
+
     chain
       .then(function () {
-        if (andRestart) {
-          return exec("sh " + q(CTL) + " restart").then(function (r) {
-            if (r.errno !== 0) throw new Error(r.stderr || "重启失败");
-          });
-        }
+        // 复用 act() 的完整流程（投递 + 状态确认），不再自己 exec restart，
+        // 避免与按钮触发的启停并发。
+        if (!andRestart) return null;
+        return act("restart", "重启").then(function (res) {
+          if (!res.ok) restartFailed = true;
+          return res;
+        });
       })
-      .then(refresh)
       .then(function () {
-        toast(saved === 0 ? "没有需要保存的改动" : (andRestart ? "已保存并重启" : "已保存，重启后生效"));
+        if (restartFailed) return; // act() 已经弹过错误，不重复提示
+        if (andRestart) {
+          if (saved === 0) toast("已重启（没有配置改动）");
+          else toast("已保存并重启");
+        } else {
+          toast(saved === 0 ? "没有需要保存的改动" : "已保存，重启后生效");
+        }
       })
       .catch(function (e) {
         toast(e.message || String(e), true);
       })
       .then(function () {
         setBusy(false);
+        if (andRestart) return;
+        return refresh().catch(function () {});
       });
   }
 

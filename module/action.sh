@@ -1,5 +1,9 @@
 #!/system/bin/sh
 # KernelSU / Magisk 模块页面的「动作」按钮。
+#
+# 动作按钮和开机脚本一样，是在系统域里跑的（管理器会用 switch_cgroups 脱离 App 的
+# cgroup），所以它也是「把守护进程放到正确位置」的合法入口：面板里的执行器不行。
+# 因此这里先确保守护进程在跑，再让守护进程去做启停。
 
 # 动作按钮的调用方式与开机脚本一致：可能只给文件名、cwd 是模块目录。
 # 逐个候选目录试，以「里面确实有 config.sh」为准。
@@ -14,6 +18,10 @@ for _c in "$MODDIR" "$OFM_MODDIR" "$_self_dir" "$_self_dir/.." "$(pwd)" "$(pwd)/
 done
 MODDIR=${_moddir:-/data/adb/modules/ofm_gateway}
 CTL="$MODDIR/common/ofmctl.sh"
+export OFM_MODDIR="$MODDIR" OFM_CLIENT=action
+
+# 顺手把守护进程拉到位（已经是它自己就不重复起）
+sh "$CTL" daemon start action >/dev/null 2>&1
 
 STATE=$(sh "$CTL" status)
 
@@ -36,6 +44,6 @@ while true; do
     4) exit 0 ;;
     *) continue ;;
   esac
-  sleep 2
+  # 启停请求已经由守护进程执行完才返回（超时会带 rc=2），不用再盲等
   STATE=$(sh "$CTL" status)
 done

@@ -1,5 +1,70 @@
 # 更新日志
 
+## v0.6.0
+
+**修：在面板里点「启动」后，一退出管理器应用服务就掉**
+
+以前从 WebUI（或动作按钮）启停，是由那次命令自己把 node 拉起来的。KernelSU 的
+`exec` 走 `ksud debug su`，这条命令的进程留在**管理器 App 的 cgroup** 里，
+所以 App 一被系统回收，同组的 node 也跟着没了 —— 表现就是「点启动是好的，
+杀掉管理器就断连，保活着管理器才不断」。`setsid` / `nohup` / `disown` 都救不了：
+它们只改会话与进程组，改不了 cgroup 归属（KernelSU-Next #1180 有实测）。
+
+本版把「谁执行启停」换了个位置：
+
+**修：**
+- **新增常驻守护进程 `common/ofmd.sh`**，正常情况下由它唯一负责执行启停
+  （守护进程自己起不来时才会退化为直接执行，并在返回文案里写明代价）。
+  它由开机脚本 `service.sh` 拉起 —— 开机脚本走的是管理器的 `exec_script_with()`，
+  会 `detach_process_group(true)` + `switch_cgroups()`，因此落在**系统域**，
+  管理器 App 怎么退都不影响它。
+- **日志链去掉 FIFO。** 旧版是 `node → FIFO → log_writer` 单读者链路，
+  读端一死，node 下一次写 stdout 就触发 `EPIPE` 直接退出（host 实测约 1.2 秒），
+  于是「服务莫名其妙掉了」。现在 node 的输出直接追加进当天日志文件，
+  日志路径与 `LOG_KEEP_DAYS` 保留策略都不变。
+- **停止按进程组收敛。** node 现在由 `setsid` 拉成会话/进程组组长，
+  `stop` 时 `kill -TERM -<pid>`，10 秒后仍未退出再 `kill -KILL -<pid>`，
+  最后按命令行兜底清理 Magpie 子进程，不再留孤儿。`runtime.sh` 替换运行前也按同样方式收敛，
+  免得留下「拿着已删文件」的进程。
+- **安装/卸载期间先让守护进程让路。** `customize.sh` 在解运行时之前先 `daemon stop`，
+  否则守护进程会按「意图=运行」把 node 重新拉起来，拉的还是正要被替换的那份运行时。
+- **陈旧 `service.lock` 自动回收。** Android 上 `process.platform === 'android'`，
+  上游的 `acquireProcessGuard()` 返回 `null`，「EEXIST 即抛错」，陈旧锁永远不会自愈，
+  用户只会看到「启动失败：数据目录已有服务运行…」。现在按上游语义自行判定：
+  `product` 对不上或解析不出 pid 就拒删并报错；pid 已死、或 pid 已被别的进程复用
+  （命令行不是本服务的 node）就清掉；命令行对得上则绝不删。
+- **卸载更干净。** `uninstall.sh` 现在按「停服务 → 停守护进程 → 兜底杀进程」的顺序执行，
+  否则守护进程会把刚停掉的服务重新拉起来。
+
+**改：**
+- **WebUI 只投递请求，不再直接执行启停。** 面板改为
+  `sh ofmctl.sh submit <start|stop|restart>`，由守护进程执行；拿到 `rc=0`（完成）
+  或 `rc=2`（处理中）后每 800ms 查一次 `info`，直到 `running` 变成预期值，最长等 30 秒。
+  「保存并重启」复用同一条通道，不会再并发到两条命令。
+- **`ofmctl.sh` 新增 `submit` 与 `daemon start|stop|status`。** `submit` 输出单行
+  `id=… rc=… msg=…`，默认最多等 12 秒；`start` / `stop` / `restart` 保留为同步入口，
+  分别等 20 / 15 / 25 秒，内部同样走投递通道。
+- **`status` / `info` 增加守护进程信息。** `status` 多一行「守护进程：运行中（pid …，
+  系统域）/（降级）/未运行」；`info` 新增 `daemon`、`daemon_pid`、`daemon_started`、
+  `daemon_persistent`、`daemon_cgroup` 五个键。
+- **降级模式可见。** 若守护进程是从面板临时拉起的，它仍在 App 域，
+  `daemon_persistent=0`，WebUI 顶部会提示「退出管理器可能被回收，请改用动作按钮或重启手机」；
+  `daemon=0` 时提示「此时从面板启停的服务可能在退出管理器后被系统回收」。
+- **守护进程会看着服务。** 用户点过启动、或开机自启开着时，node 万一退出，
+  守护进程按意图自动拉回，连续失败按 10s 起退避（上限 120s），不会把电量和日志刷爆。
+- **拉不起守护进程时不再假装成功。** 万一 `daemon_ensure` 失败，命令仍会直接把服务起起来，
+  但返回文案会写明「守护进程不可用，已直接执行（退出管理器后可能被回收）」。详见 `ofmctl.sh`。
+- `service.sh` 现在**无条件**先拉起守护进程（即使 `AUTOSTART=0`），再按 `AUTOSTART`
+  决定要不要启动服务；否则从面板启动时只能降级到 App 会话里，那正是要修的问题。
+- `scripts/build.sh` 的打包清单加入 `common/ofmd.sh`。
+
+**升级注意**
+- 本次只改模块脚本（`common/ofmctl.sh`、新增 `common/ofmd.sh`、`common/runtime.sh`、
+  `service.sh`、`action.sh`、`customize.sh`、`uninstall.sh`、`webroot/index.html`、
+  `scripts/build.sh`），服务代码与 Node 运行时都不变，`usr` 指纹不变，**刷增量包即可**。
+- 数据目录 `/data/adb/ofm` 不受影响；`/data/adb/ofm/control/` 是新的运行时状态目录，
+  升级后自动创建。
+
 ## v0.5.1
 
 **新：日志按天分文件保存，并可一键提交议题到仓库**

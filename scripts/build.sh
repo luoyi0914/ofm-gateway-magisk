@@ -319,7 +319,8 @@ printf '%s\n' "$USR_REV" >"$WORK/module/runtime/usr-rev"
 cp "$ROOT/module/module.prop" "$ROOT/module/customize.sh" "$ROOT/module/service.sh" \
    "$ROOT/module/uninstall.sh" "$ROOT/module/action.sh" "$ROOT/module/config.sh" \
    "$WORK/module/"
-cp "$ROOT/module/common/ofmctl.sh" "$ROOT/module/common/runtime.sh" "$WORK/module/common/"
+cp "$ROOT/module/common/ofmctl.sh" "$ROOT/module/common/ofmd.sh" \
+   "$ROOT/module/common/runtime.sh" "$WORK/module/common/"
 chmod 0755 "$WORK/module"/*.sh "$WORK/module/common"/*.sh
 
 # webroot 的权限与 SELinux 上下文由 KernelSU 安装时自己设置，这里不碰
