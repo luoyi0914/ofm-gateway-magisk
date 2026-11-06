@@ -66,7 +66,9 @@
 > 本模块用与上游一致的参数交叉编译了 **android/arm64** 引擎（上游 magpie 钉子 `6a900e0d`），
 > 随模块运行时 `usr/` 分发（`/data/adb/ofm-runtime/usr/bin/magpie-android-arm64`），
 > 服务启动时由 `OFM_MAGPIE_BINARY` 指向它，因此在 Android 上也用上了 Magpie 引擎。
-> 引擎约 61 MB，故完整包体积较大；增量包仍只含 app（约 2 MB）。
+> 引擎约 64 MB；加上随 `usr/` 分发的 Bun（约 83 MB，用于装 `@magpie-community/*` 插件），
+> 完整包约 93 MB。增量包仍只含 app（约 2.3 MB），但 usr 内容变化时（如新增 Bun）
+> 必须刷完整包。
 
 | 来源 | 地址 | 说明 |
 | --- | --- | --- |
