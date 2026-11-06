@@ -43,6 +43,11 @@ const fail = message => {
 
 const ANCHOR_RAW = 'createMagpieEngine({ dataDir, logger })'
 const ANCHOR_PATCHED = 'createMagpieEngine({ dataDir, logger, binary: process.env.OFM_MAGPIE_BINARY || undefined })'
+// 幂等探测只看「本脚本关心的那一段」：后续 magpie-bun-env.mjs 会在这个调用里再追加
+// `bun: process.env.OFM_MAGPIE_BUN || undefined`，整串比对会在第二次构建（增量包复用
+// 已打过补丁的 --app 目录）时既匹配不到 ANCHOR_PATCHED、又匹配不到 ANCHOR_RAW，
+// 误判成「上游结构变了」而让构建失败。
+const PATCH_MARKER = 'binary: process.env.OFM_MAGPIE_BINARY || undefined'
 
 /**
  * 补一个文件。required=true 时找不到锚点即失败；否则只报告跳过。
@@ -56,7 +61,8 @@ function patchFile(rel, required) {
     return 'skipped'
   }
   const source = readFileSync(file, 'utf8')
-  if (source.includes(ANCHOR_PATCHED)) {
+  // 只认「OFM_MAGPIE_BINARY 已经接进去了」这个事实，不要求整串完全等于 ANCHOR_PATCHED。
+  if (source.includes(PATCH_MARKER)) {
     console.log(`magpie-binary-env: ${rel} 已经是修补后的形态，跳过`)
     return 'already'
   }
