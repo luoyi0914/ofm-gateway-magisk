@@ -3,7 +3,7 @@ name: Build & Release
 # 推 tag 即自动构建并发版；也可在 Actions 页面手动指定一个已有 tag 重跑。
 #
 # 每次发版产出两个附件：
-#   完整包 OFM_Gateway_Magisk_v<ver>.zip        约 61 MB，含 usr（Node 运行时 + arm64 Magpie 引擎）+ app
+#   完整包 OFM_Gateway_Magisk_v<ver>.zip        约 93 MB，含 usr（Node 运行时 + arm64 Magpie 引擎 + bun）+ app
 #   增量包 OFM_Gateway_Magisk_v<ver>_patch.zip  约  2 MB，只含 app
 # 日常升级刷增量包即可；只有换 Node 运行时 / 换包结构（如首次加入引擎）才需要完整包。
 #
@@ -98,6 +98,15 @@ jobs:
           ls -lh .cache/magpie-android-arm64
           ls -lh .cache/magpie-meta
 
+      - name: 取 arm64 Bun（随 usr 分发）
+        run: |
+          # Magpie 自己下载的 bun 落在应用私有目录，Android 上不可 exec，
+          # 装 @magpie-community 插件会报 fork/exec …/magpie-bun: permission denied。
+          # 这里取官方 zip（sha256 与 Magpie 上游 bunSums 一致）解出可执行文件，
+          # build.sh 的 inject_bun 会把它放到 usr/bin/magpie-bun。
+          bash scripts/fetch-bun.sh
+          ls -lh .cache/bun-android-arm64
+
       - name: 从基线 Release 取 Node 运行时
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -164,8 +173,8 @@ jobs:
             echo
             echo '| 文件 | 大小 | 什么时候下 |'
             echo '| --- | --- | --- |'
-            echo '| `OFM_Gateway_Magisk_v'"$VERSION"'.zip` | 约 61 MB | 第一次装，或从很老的版本升级，或本次换了包结构（如新增引擎） |'
-            echo '| `OFM_Gateway_Magisk_v'"$VERSION"'_patch.zip` | 约 2 MB | 已经装过同一 usr 结构的版本，日常升级用这个 |'
+            echo '| `OFM_Gateway_Magisk_v'"$VERSION"'.zip` | 约 93 MB | 第一次装，或从很老的版本升级，或本次换了包结构（如新增引擎、Bun） |'
+            echo '| `OFM_Gateway_Magisk_v'"$VERSION"'_patch.zip` | 约 2.3 MB | 已经装过同一 usr 结构的版本，日常升级用这个 |'
             echo
             echo '增量包只含服务代码，安装时会核对设备上已有的 Node 运行时；'
             echo '对不上会直接报错让你改刷完整包，不会装出半套。'

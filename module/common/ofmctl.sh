@@ -375,6 +375,14 @@ svc_start() {
     OFM_MAGPIE_BINARY="$RT_DIR/usr/bin/magpie-android-arm64"
   fi
 
+  # Bun 同理：引擎默认会把 bun 下载到 $HOME/.cache/magpie/bun/<ver>/magpie-bun 再
+  # fork/exec。模块版是 root，落盘目录其实可执行，但「随包分发」能省掉一次 33MB 的
+  # 联网下载，也让弱网/无网设备能装插件。构建期补丁把它接成 MAGPIE_BUN。
+  OFM_MAGPIE_BUN=
+  if [ -x "$RT_DIR/usr/bin/magpie-bun" ]; then
+    OFM_MAGPIE_BUN="$RT_DIR/usr/bin/magpie-bun"
+  fi
+
   # 服务只在回环地址上监听；局域网是上游自己的中继（独立 Key），
   # 由 --lan / --no-lan 开关，并可从配置里指定端口。
   # 用位置参数逐个传递、逐项加引号，避免 DATA_DIR 等含空格时被再次分词。
@@ -400,7 +408,7 @@ svc_start() {
   # pid 由内层 shell 自己写（$$ 就是它 exec 之后的 node 的 pid）：
   # 外层用 `$!` 拿到的可能是 setsid 的包装进程，尤其是本进程已是组长时。
   if command -v setsid >/dev/null 2>&1; then
-    OFM_HOME="$DATA_DIR" HOME="$MODDIR" OFM_MAGPIE_BINARY="$OFM_MAGPIE_BINARY" \
+    OFM_HOME="$DATA_DIR" HOME="$MODDIR" OFM_MAGPIE_BINARY="$OFM_MAGPIE_BINARY" OFM_MAGPIE_BUN="$OFM_MAGPIE_BUN" \
       setsid sh -c 'printf "%s\n" "$$" >"$1"; shift; exec "$@"' \
         ofm-node "$PIDFILE" "$NODE" "$APP_ENTRY" "$@" \
         >>"$_logf" 2>&1 </dev/null &
@@ -408,7 +416,7 @@ svc_start() {
     # 没有 setsid（极老的 toybox / Magisk v31 起不再自带 busybox）时退化为普通子进程：
     # 停止仍能按 pid 收敛，只是 Magpie 子进程可能成孤儿，启动日志里留一条记录。
     log_note "警告：本机没有 setsid，服务不独立成会话"
-    OFM_HOME="$DATA_DIR" HOME="$MODDIR" OFM_MAGPIE_BINARY="$OFM_MAGPIE_BINARY" \
+    OFM_HOME="$DATA_DIR" HOME="$MODDIR" OFM_MAGPIE_BINARY="$OFM_MAGPIE_BINARY" OFM_MAGPIE_BUN="$OFM_MAGPIE_BUN" \
       sh -c 'printf "%s\n" "$$" >"$1"; shift; exec "$@"' \
         ofm-node "$PIDFILE" "$NODE" "$APP_ENTRY" "$@" \
         >>"$_logf" 2>&1 </dev/null &
@@ -459,6 +467,10 @@ svc_stop() {
   # 兜底：进程组收敛没成功时（node 不是组长、或旧版留下的孤儿），
   # 按命令行清掉本运行时的 Magpie 子进程
   for _p in $(pidof magpie-android-arm64 2>/dev/null); do
+    pid_cmdline "$_p" | grep -q "$RT_DIR" && kill -TERM "$_p" 2>/dev/null
+  done
+  # bun 是引擎的子进程，同组收敛通常已经带走；漏网的按同样方式清掉
+  for _p in $(pidof magpie-bun 2>/dev/null); do
     pid_cmdline "$_p" | grep -q "$RT_DIR" && kill -TERM "$_p" 2>/dev/null
   done
 

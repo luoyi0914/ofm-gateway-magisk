@@ -38,6 +38,10 @@ DIST="$ROOT/dist"
 # 两者都由 scripts/build-magpie-engine.mjs 生成到 .cache/，可用环境变量覆盖。
 ENGINE_BIN=${OFM_MAGPIE_ENGINE:-$CACHE/magpie-android-arm64}
 ENGINE_META=${OFM_MAGPIE_META:-$CACHE/magpie-meta}
+# Bun 同理：Magpie 自己下载的 bun 落在应用私有目录，Android 上不可 exec，
+# 装 @magpie-community 插件会报 fork/exec …/magpie-bun: permission denied。
+# 所以 bun 也随 usr 分发，启动脚本导出 OFM_MAGPIE_BUN 指过去。
+BUN_BIN=${OFM_BUN:-$CACHE/bun-android-arm64}
 
 # ---------------- 参数 ----------------
 
@@ -138,6 +142,22 @@ inject_engine() {
   mkdir -p "$_usr_dir/usr/bin"
   cp -f "$ENGINE_BIN" "$_usr_dir/usr/bin/magpie-android-arm64"
   chmod 0755 "$_usr_dir/usr/bin/magpie-android-arm64"
+}
+
+# Bun 随 usr 分发：Magpie 自己下载的 bun 落在应用私有目录，Android 上不可 exec，
+# 装社区插件会报 fork/exec …/magpie-bun: permission denied。这里放进 usr/bin，
+# 由启动脚本导出 OFM_MAGPIE_BUN 指过来（引擎侧读 MAGPIE_BUN 短路下载）。
+# 同样必须在算 usr_rev 与打 usr.tgz 之前调用。
+inject_bun() {
+  _usr_dir=$1
+  if [ ! -f "$BUN_BIN" ]; then
+    echo "缺少 arm64 Bun：$BUN_BIN" >&2
+    echo "先运行 bash android-app/scripts/fetch-runtime-bundle.sh（或设 OFM_BUN 指向已有二进制）" >&2
+    return 1
+  fi
+  mkdir -p "$_usr_dir/usr/bin"
+  cp -f "$BUN_BIN" "$_usr_dir/usr/bin/magpie-bun"
+  chmod 0755 "$_usr_dir/usr/bin/magpie-bun"
 }
 
 # 引擎元数据随 app 分发：让状态面板能显示引擎版本/来源，并满足升级器的运行时资产清单
@@ -260,6 +280,9 @@ if _node=$(command -v node 2>/dev/null); then
   # 把 OFM_MAGPIE_BINARY 接进 createMagpieEngine，让服务用 usr 里的 arm64 引擎
   "$_node" "$ROOT/scripts/magpie-binary-env.mjs" "$APP_DIR" ||
     { echo "Magpie 引擎环境变量补丁失败（上游结构可能变了）" >&2; exit 1; }
+  # 再接入 OFM_MAGPIE_BUN 与默认国内镜像（bun 从 usr/bin 跑，dist 走 jsDelivr）
+  "$_node" "$ROOT/scripts/magpie-bun-env.mjs" "$APP_DIR" ||
+    { echo "Bun 环境变量/国内镜像补丁失败（上游结构可能变了）" >&2; exit 1; }
 else
   echo "没有 node，无法做运行期补丁" >&2; exit 1
 fi
@@ -297,6 +320,7 @@ fi
 if [ "$MODE" = full ]; then
   materialize_usr "$USR_SRC" "$WORK/usr-src" || exit 1
   inject_engine "$WORK/usr-src" || exit 1
+  inject_bun "$WORK/usr-src" || exit 1
   USR_REV=$(usr_rev "$WORK/usr-src/usr")
   tar -czf "$WORK/module/runtime/usr.tgz" -C "$WORK/usr-src" usr
 elif [ -n "$OFM_USR_REV" ]; then
@@ -305,6 +329,7 @@ elif [ -n "$OFM_USR_REV" ]; then
 else
   materialize_usr "$USR_SRC" "$WORK/usr-src" || exit 1
   inject_engine "$WORK/usr-src" || exit 1
+  inject_bun "$WORK/usr-src" || exit 1
   USR_REV=$(usr_rev "$WORK/usr-src/usr")
 fi
 

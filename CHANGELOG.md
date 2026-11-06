@@ -1,5 +1,37 @@
 # 更新日志
 
+## v0.6.1
+
+**修：装社区插件报 `fork/exec …/magpie-bun: permission denied`**
+
+在「发现」页装 `@magpie-community/*` 插件时，会同时看到两条报错：
+
+```
+bun add @magpie-community/opencode-mimo-auth@latest: fork/exec
+/data/adb/…/cache/magpie/bun/1.4.2/magpie-bun: permission denied
+(and from the community repo's dist branch: … connection reset by peer)
+```
+
+第一条是主因。Magpie 引擎跑 `bun add` 前会自己下载一份 Bun 到缓存目录，
+下载完直接 `fork/exec`。在 Android 上这条路走不通：应用私有目录里落盘的
+可执行文件不能被执行（W^X）。引擎把这种失败当成「装包失败」，于是又去
+回退社区仓库的 dist 分支；那条回退本来只是绕过 npm 拿 tarball，装包仍要
+bun 可执行，所以必然跟着失败，两条错误就拼在一起显示出来了。
+
+**修：**
+- **Bun 随模块分发**：`usr/bin/magpie-bun`（约 83 MB，与引擎同一目录、同样 0755）。
+  启动脚本在它可执行时导出 `OFM_MAGPIE_BUN`，引擎侧读到就跳过下载与落盘，
+  直接用这份能跑的 Bun。`/usr` 是 root 可执行目录，不存在上面的限制。
+- **引擎启动参数补 `MAGPIE_BUN`**：上游引擎会清掉所有继承来的 `MAGPIE_*`
+  变量再重建环境，所以不能从父进程直接传，必须在它清理之后注入。
+- **「国内镜像」默认打开**：社区仓库 dist 分支与 npm 源在大陆常连不上
+  （上面第二条 `connection reset by peer`）。新装默认写 `chinaMirror: true`，
+  显式关过的用户保持不变。
+
+**变：**
+- usr 指纹因为多了 Bun 而改变（`ee7e15211d29b38e`）。**从 v0.6.0 或更早升级
+  必须刷完整包**，增量包不含 usr，会明确提示改刷完整包。
+
 ## v0.6.0
 
 **修：在面板里点「启动」后，一退出管理器应用服务就掉**
