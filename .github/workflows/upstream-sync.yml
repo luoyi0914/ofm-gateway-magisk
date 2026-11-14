@@ -1,0 +1,222 @@
+name: Upstream Sync
+
+# 每天巡检上游 Ebony-Vinyl/dsh-our-free-model 的正式 tag（形如 vX.Y.Z，自动排除
+# -macos-unofficial 这类后缀 tag），并与仓库里的 upstream.version 比对：
+#
+#   · patch 级更新（如 2.7.3 -> 2.7.4）：全自动——同步、构建校验、递增模块版本、
+#     提交 main、打 tag，然后复用 Build & Release 直接构建发正式版。
+#
+#   · minor / major 级更新（如 2.7.x -> 2.8.0 或 3.x）：判定为「大改」，暂停并开
+#     issue 等人工确认，不自动发版。确认后用「Run workflow」勾选 force_big 放行。
+#
+#   · 构建校验失败（补丁锚点漂移 / import 图断裂 / app 体积异常）：立即停下并开
+#     issue，附失败信息，绝不把坏包发出去。
+#
+# 手动触发（Actions → Upstream Sync → Run workflow）：
+#   force_big：即使是大版本更新也强制同步（人工确认大改无误后使用）
+#   dry_run  ：只检测上游是否更新并做一次构建校验，不改文件、不提交、不发版
+
+on:
+  schedule:
+    # GitHub cron 用 UTC：20:00 UTC = 北京时间次日 04:00
+    - cron: '0 20 * * *'
+  workflow_dispatch:
+    inputs:
+      force_big:
+        description: '大版本更新也强制同步（人工确认后放行）'
+        type: boolean
+        default: false
+      dry_run:
+        description: '只检测与构建校验，不提交、不发版'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: Ebony-Vinyl/dsh-our-free-model
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      newtag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - name: 检出 main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: 配置 git 身份
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: 检测上游最新正式版本并与本地比对
+        id: detect
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # 只取纯 vX.Y.Z 的正式 tag；sort -V 取语义最大者
+          UP=$(gh api "repos/$UPSTREAM_REPO/tags" --paginate --jq '.[].name' \
+               | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1 || true)
+          UP=${UP#v}
+          CUR=$(tr -d '[:space:]' < upstream.version)
+          echo "本地当前上游：$CUR / 上游最新正式：${UP:-<无>}"
+
+          if [ -z "$UP" ]; then
+            echo "上游没有形如 vX.Y.Z 的正式 tag，结束"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$UP" = "$CUR" ]; then
+            echo "已是最新（$CUR），无需同步"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          NEWER=$(printf '%s\n%s\n' "$CUR" "$UP" | sort -V | tail -n1)
+          if [ "$NEWER" != "$UP" ]; then
+            echo "上游 $UP 不比本地 $CUR 新（可能上游回退），不动"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CU_MA=${CUR%%.*};                        UP_MA=${UP%%.*}
+          CU_MI=$(echo "$CUR" | cut -d. -f2);      UP_MI=$(echo "$UP" | cut -d. -f2)
+          BIG=false
+          if [ "$CU_MA" != "$UP_MA" ] || [ "$CU_MI" != "$UP_MI" ]; then BIG=true; fi
+
+          FORCE="${{ github.event_name == 'workflow_dispatch' && inputs.force_big || false }}"
+
+          echo "cur=$CUR"     >> "$GITHUB_OUTPUT"
+          echo "up=$UP"       >> "$GITHUB_OUTPUT"
+          echo "big=$BIG"     >> "$GITHUB_OUTPUT"
+          echo "force=$FORCE" >> "$GITHUB_OUTPUT"
+
+          if [ "$BIG" = true ] && [ "$FORCE" != true ]; then
+            echo "::warning::上游大版本更新 $CUR -> $UP，暂停自动同步，等待人工确认"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "上游更新 $CUR -> $UP（big=$BIG, force=$FORCE），继续自动同步"
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 大版本更新——开 issue 等人工确认
+        if: steps.detect.outputs.go == 'false' && steps.detect.outputs.big == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          UP='${{ steps.detect.outputs.up }}'
+          CUR='${{ steps.detect.outputs.cur }}'
+          EXIST=$(gh issue list --state open --search "上游 $UP 大版本更新 in:title" \
+                  --json number --jq 'length' 2>/dev/null || echo 0)
+          if [ "$EXIST" != "0" ]; then
+            echo "已存在关于上游 $UP 的 issue，跳过重复创建"
+            exit 0
+          fi
+          cat > /tmp/issue-body.md <<EOF
+          上游发布了 **v$UP**，相对当前同步的 **v$CUR** 属于 **minor / major 级**更新，可能有结构性改动。
+
+          自动同步已暂停，**没有**发版。请人工确认后再放行：
+
+          1. 看上游 release 与 diff：https://github.com/$UPSTREAM_REPO/releases/tag/v$UP
+          2. 确认无误后，到 **Actions → Upstream Sync → Run workflow**，勾选 **force_big** 再跑一次；
+             它会重新走「构建校验 → 递增版本 → 打 tag → 发版」的全流程。
+
+          如果构建校验失败，会在下面再开一条 issue 说明。
+          EOF
+          gh issue create \
+            --title "上游 $UP 大版本更新（$CUR → $UP），已暂停自动同步" \
+            --body-file /tmp/issue-body.md
+
+      - name: 构建校验（补丁锚点 / import 图 / app 体积）
+        id: buildcheck
+        if: steps.detect.outputs.go == 'true'
+        continue-on-error: true
+        run: |
+          # 只做 app 组装 + 三处补丁 + import 图 + 体积校验，不下载大块运行时：
+          # --patch 模式给一个占位 usr 指纹即可跳过 usr 解包（含引擎与 Bun），
+          # 校验通过后再由 Build & Release 出正式的双包。
+          #
+          # 引擎元数据仍会被 build.sh 装进 app。引擎版本钉在
+          # scripts/build-magpie-engine.mjs（revision 6a900e0d）里，与上游服务
+          # 版本无关，这里用占位元数据跳过 Go/NDK 编译，避免每日巡检为了一份
+          # 与本次同步无关的二进制多跑几分钟。
+          mkdir -p .cache/magpie-meta
+          printf '{"name":"magpie","binaries":[]}\n' > .cache/magpie-meta/engine.json
+          OFM_BUILD_DIR=/tmp/ofm-sync-check OFM_USR_REV=0000000000000000 \
+            sh scripts/build.sh --patch --upstream '${{ steps.detect.outputs.up }}'
+
+      - name: 构建校验失败——开 issue 报告并终止
+        if: steps.buildcheck.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          UP='${{ steps.detect.outputs.up }}'
+          EXIST=$(gh issue list --state open --search "上游 $UP 构建校验失败 in:title" \
+                  --json number --jq 'length' 2>/dev/null || echo 0)
+          if [ "$EXIST" = "0" ]; then
+            cat > /tmp/issue-body.md <<EOF
+            把上游 **v$UP** 组装进来时**构建校验失败**（补丁锚点漂移 / import 图断裂 / app 体积异常之一）。
+
+            本次没有递增版本，也**没有**发版。请查看本次运行日志：
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            多半需要按新的上游结构修 scripts/openai-developer-compat.mjs 或 scripts/build.sh 的
+            组装清单，修好后到 **Actions → Upstream Sync → Run workflow** 勾选 force_big 重跑。
+            EOF
+            gh issue create \
+              --title "上游 $UP 构建校验失败，已暂停自动同步" \
+              --body-file /tmp/issue-body.md
+          fi
+          echo "::error::上游 $UP 构建校验失败，已停止"
+          exit 1
+
+      - name: 递增模块版本并写 CHANGELOG
+        id: bump
+        if: steps.detect.outputs.go == 'true' && steps.buildcheck.outcome == 'success' && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          UP='${{ steps.detect.outputs.up }}'
+          # 拿上游 release 正文当 CHANGELOG 素材（没有就留空，脚本会兜底）
+          gh api "repos/$UPSTREAM_REPO/releases/tags/v$UP" --jq '.body' > /tmp/up-body.md 2>/dev/null || : > /tmp/up-body.md
+          NEWVER=$(python3 scripts/auto-bump.py --upstream "$UP" --body-file /tmp/up-body.md)
+          echo "tag=v$NEWVER"    >> "$GITHUB_OUTPUT"
+          echo "version=$NEWVER" >> "$GITHUB_OUTPUT"
+          echo "已递增到模块版本 $NEWVER"
+          git --no-pager diff --stat
+
+      - name: 提交 main 并打 tag
+        if: steps.bump.outcome == 'success' && inputs.dry_run != true
+        run: |
+          git add -A
+          git commit -m "sync: 上游 ${{ steps.detect.outputs.cur }} → ${{ steps.detect.outputs.up }}（自动同步，模块 v${{ steps.bump.outputs.version }}）"
+          git push origin HEAD:main
+          git tag '${{ steps.bump.outputs.tag }}'
+          git push origin '${{ steps.bump.outputs.tag }}'
+          echo "已推送 main 与 tag ${{ steps.bump.outputs.tag }}"
+
+      - name: dry-run 结束提示
+        if: inputs.dry_run == true
+        run: echo "dry_run：已完成检测与构建校验，未修改文件、未提交、未发版。"
+
+  # 直接复用 Build & Release（reusable 调用），而不是靠推 tag 触发——
+  # 用 GITHUB_TOKEN 推出去的 tag 不会触发新的 workflow run。
+  release:
+    needs: sync
+    if: needs.sync.outputs.newtag != ''
+    permissions:
+      contents: write
+    uses: ./.github/workflows/build-release.yml
+    with:
+      tag: ${{ needs.sync.outputs.newtag }}
+    secrets: inherit

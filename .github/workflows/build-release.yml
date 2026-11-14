@@ -21,6 +21,15 @@ on:
         description: '要构建并发版的 tag（必须已存在于仓库）'
         required: true
         type: string
+  # 供 upstream-sync.yml 在自动同步上游后直接复用本工作流构建发版。
+  # 用 reusable 直接调用而不是「推 tag 等触发」：GITHUB_TOKEN 推送的事件
+  # 不会触发新的 workflow run，那样自动流程永远等不到发版。
+  workflow_call:
+    inputs:
+      tag:
+        description: '要构建并发版的 tag（由上游同步工作流传入）'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -40,7 +49,7 @@ jobs:
       - name: 解析本次的 tag 与版本号
         id: meta
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.event_name }}" = "workflow_call" ]; then
             TAG="${{ inputs.tag }}"
           else
             TAG="${GITHUB_REF_NAME}"

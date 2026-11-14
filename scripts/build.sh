@@ -6,7 +6,7 @@
 #   ./scripts/build.sh --patch         增量包：只带 app（约 2 MB），复用设备上的 usr
 #   ./scripts/build.sh --usr <src>     指定 usr 来源（usr 目录，或含 usr/ 的 tgz）
 #   ./scripts/build.sh --app <dir>     复用已组装好的 app 目录，跳过上游拉取（离线构建）
-#   ./scripts/build.sh --upstream <v>  指定上游服务版本（默认 2.8.0）
+#   ./scripts/build.sh --upstream <v>  指定上游服务版本（默认取仓库根 upstream.version，缺失时 2.8.0）
 #
 # 运行时 = Node（含 Android 依赖库） + 上游独立服务源码。
 # 仓库不存二进制：Node 侧放 .cache/，服务代码现场从上游取，都不进版本库。
@@ -25,6 +25,11 @@ set -e
 ROOT=$(cd "${0%/*}/.." && pwd)
 VERSION=$(sed -n 's/^version=//p' "$ROOT/module/module.prop")
 VCODE=$(sed -n 's/^versionCode=//p' "$ROOT/module/module.prop")
+# 上游服务版本默认取仓库根的 upstream.version（单一真相源，供上游同步工作流读写）；
+# 显式 --upstream 或环境变量仍可覆盖。文件缺失时回退到内置默认。
+if [ -z "${UPSTREAM_VERSION:-}" ] && [ -f "$ROOT/upstream.version" ]; then
+  UPSTREAM_VERSION=$(tr -d '[:space:]' < "$ROOT/upstream.version")
+fi
 UPSTREAM_VERSION=${UPSTREAM_VERSION:-2.8.0}
 REPO_URL=${OFM_SOURCE_REPO:-https://github.com/Ebony-Vinyl/dsh-our-free-model.git}
 # 构建目录放到系统临时区：proot 下在工作区内跑 git clone / tar 容易被静默限制
