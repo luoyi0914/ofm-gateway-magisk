@@ -1,5 +1,44 @@
 # 更新日志
 
+## v0.6.2
+
+**同步上游到 2.8.5。**
+
+## v2.8.5
+
+### 插件内新增「反馈与许愿」页
+
+设置页第 14 个标签，和独立端控制台里那个是同一个入口。用 GitHub 登录后可以报告问题或提功能愿望，提交时自动带上版本与平台。
+
+- 登录只索取 GitHub 公开身份，不请求任何仓库权限
+- 令牌只落在本机 settings，页面永远拿不到（只回 `{signedIn, login}`），注入脚本也偷不走
+- 提交失败不会伪装成成功：缺单号、登录失效都会明确报出来，正文留在输入框
+
+### EAC 渠道下线四个模型
+
+`opencode/flint-40b-free`、`opencode/nemotron-3.5-lightning-free`、`opencode/nemotron-3.5-super-vl-free`、`mimo-v2.6-flash-free` 原本只由 OpenCode 家宽车道提供，该链路已停用。EAC 页模型数 19 → 16。
+
+带 **高速** 与 **爆** 标记的两个 400K 模型不受影响——它们由 Dahl Inference 提供，仍在正常服务。
+
+### 修复
+
+- 反馈页漏登记在 `TABS` 白名单里：导航可见、点得动，但刷新后永远弹回「免费模型」
+- 收集端未配置时把裸错误码 `unconfigured` 丢给用户，现在会说清是服务端要配 GitHub 登录
+
+### 安装
+
+```bash
+dsh plugin --profile web add @ebony-vinyl/dsh-our-free-model@2.8.5
+```
+
+npm 上那个裸名的 `dsh-our-free-model` 仍是第三方打包，请勿安装。
+
+### 验证
+
+121/121 套件、typecheck 0、client-lint OK、清单 80 文件重签（两个历史升级器均接受）、真桌面宿主实机 10/10。
+
+> 本版由「上游同步」工作流自动生成：服务代码取自上游 v2.8.5；构建期补丁（`developer` 角色兼容）已通过锚点与 import 图校验。
+
 ## v0.6.1
 
 **修：装社区插件报 `fork/exec …/magpie-bun: permission denied`**
