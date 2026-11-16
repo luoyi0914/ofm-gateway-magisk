@@ -46,7 +46,8 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     outputs:
-      newtag: ${{ steps.bump.outputs.tag }}
+      # 正常情况下由 bump 产生新 tag；up-to-date 但缺少 Release 时由 detect 兜底补发
+      newtag: ${{ steps.bump.outputs.tag || steps.detect.outputs.newtag }}
     steps:
       - name: 检出 main
         uses: actions/checkout@v4
@@ -79,6 +80,17 @@ jobs:
           fi
           if [ "$UP" = "$CUR" ]; then
             echo "已是最新（$CUR），无需同步"
+            # 上一次同步可能已经提交并打了 tag，但发版那一步失败（历史上就发生过：
+            # reusable workflow 里误把调用方的事件名当成 workflow_call）。这种情况下
+            # upstream.version 已是最新，巡检会永远跳过，Release 也就永远补不上。
+            # 这里检查「模块版本已有 tag 却没有 Release」，有就交给 release 任务补发。
+            MODVER=$(sed -n 's/^version=//p' module/module.prop)
+            if [ -n "$MODVER" ] && \
+               git rev-parse -q --verify "refs/tags/v$MODVER" >/dev/null 2>&1 && \
+               ! gh release view "v$MODVER" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "模块 v$MODVER 已有 tag 但没有 Release，补发"
+              echo "newtag=v$MODVER" >> "$GITHUB_OUTPUT"
+            fi
             echo "go=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi

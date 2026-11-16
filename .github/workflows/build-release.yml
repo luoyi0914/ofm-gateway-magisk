@@ -49,9 +49,12 @@ jobs:
       - name: 解析本次的 tag 与版本号
         id: meta
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.event_name }}" = "workflow_call" ]; then
-            TAG="${{ inputs.tag }}"
-          else
+          # 不能用 github.event_name 判断：本工作流被 workflow_call 复用时，
+          # 这里拿到的是「调用方」的事件名（如 schedule），而不是 workflow_call。
+          # 只有 workflow_dispatch 和复用调用会给 inputs.tag；推 tag 触发时它为空，
+          # 这时才回退到 GITHUB_REF_NAME。
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ]; then
             TAG="${GITHUB_REF_NAME}"
           fi
           case "$TAG" in
