@@ -26,6 +26,64 @@ def _die(msg):
     raise SystemExit(1)
 
 
+def _strip_install_section(text: str) -> str:
+    """去掉上游说明里的「安装」小节。
+
+    上游 release 正文里的安装方式是给 npm 插件用户看的（dsh plugin add ...），
+    与本模块「刷 zip + 重启」完全无关，原样搬进模块更新日志只会误导。
+    按标题层级整段移除：从「安装」标题开始，到下一个同级或更高级标题为止。
+    """
+    out = []
+    skip_level = None
+    for line in text.splitlines():
+        m = re.match(r"^(#{1,6})\s+(.*)$", line)
+        if skip_level is not None:
+            if m and len(m.group(1)) <= skip_level:
+                skip_level = None
+            else:
+                continue
+        if m and "安装" in m.group(2):
+            skip_level = len(m.group(1))
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+def _format_upstream_body(body: str, upstream: str) -> str:
+    """把上游 release 正文整理成可安全嵌入模块 CHANGELOG 的段落。
+
+    上游正文通常自带 `## v2.8.5` 与多个 `### ...`。若原样插入，这些 `##`
+    与模块版本标题同级，changelog-section.py 会在下一个 `##` 处截断，
+    导致 Release 说明只剩第一句（v0.6.2 就踩过这个坑）。
+
+    处理：去掉与上游版本重复的标题 → 去掉「安装」小节 → 所有标题降一级，
+    让它们成为 `### 上游 vX.Y.Z 的更新` 的子标题。
+    """
+    body = body.strip()
+    if not body:
+        return f"上游服务更新到 v{upstream}。"
+
+    lines = body.splitlines()
+    # 去掉开头的 `## v2.8.5` / `# 2.8.5 ...` 这类标题（内容保留下面的小节）
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        m = re.match(r"^#{1,3}\s+v?" + re.escape(upstream) + r"\b.*$", line, re.IGNORECASE)
+        if m:
+            del lines[i]
+        break
+    body = "\n".join(lines)
+
+    body = _strip_install_section(body)
+
+    # 标题降一级；只降 1~5 级，避免出现七级标题
+    body = "\n".join(
+        ("#" + line if re.match(r"^#{1,5}\s", line) else line)
+        for line in body.splitlines()
+    )
+    return body.strip()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--upstream", required=True, help="本次同步到的上游版本，如 2.7.4")
@@ -97,11 +155,11 @@ def main():
     if args.body_file and os.path.isfile(args.body_file):
         with open(args.body_file, encoding="utf-8") as f:
             body = f.read().strip()
-    if not body:
-        body = f"上游服务更新到 v{args.upstream}。"
+    body = _format_upstream_body(body, args.upstream)
     section = (
         f"## v{newver}\n\n"
         f"**同步上游到 {args.upstream}。**\n\n"
+        f"### 上游 v{args.upstream} 的更新\n\n"
         f"{body}\n\n"
         f"> 本版由「上游同步」工作流自动生成：服务代码取自上游 v{args.upstream}；"
         f"构建期补丁（`developer` 角色兼容）已通过锚点与 import 图校验。\n\n"
